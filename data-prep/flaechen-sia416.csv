@@ -1,0 +1,77 @@
+raumname,definition,zimmer_zaehler
+Badezimmer,HNF,0
+Wohnzimmer,HNF,1
+Zimmer,HNF,1
+Küche,HNF,0
+Balkon,ANF,0
+Korridor,HNF,0
+Esszimmer,HNF,0
+Schacht,FF,0
+Treppenhaus,VF,0
+Abstellraum,NNF,0
+Wohn-/Esszimmer,HNF,1
+Kellerabteil,NNF,0
+Leerraum,,0
+Aufzug,VF,0
+Nicht definiert,,0
+Büro,HNF,0
+Schlafzimmer,HNF,1
+Aussenraum,ANF,0
+Loggia,ANF,0
+Wohnküche,HNF,0.5
+Kinderwagenabstellraum,NNF,0
+Lichtschacht,,0
+Terrasse,ANF,0
+Kinderwagen- und Veloraum,NNF,0
+Korridore und Hallen,HNF,0
+Veloraum,NNF,0
+Schalterraum,FF,0
+Keller,NNF,0
+Technikraum,FF,0
+Heizung,FF,0
+Empfangsbereich,HNF,0
+Wintergarten,ANF,0
+Rampe,VF,0
+Wasch- und Trockenraum,FF,0
+Verkaufsraum,HNF,0
+Garage,NNF,0
+Foyer,HNF,0
+Haustechnikanlagen,FF,0
+Bürofläche,HNF,0
+Büro-Technikraum,FF,0
+Lagerhalle,NNF,0
+Parkhaus,NNF,0
+Sanitärräume,FF,0
+Grossraumbüro,HNF,0
+Sitzungszimmer,HNF,0
+Pausenraum,HNF,0
+Archiv,HNF,0
+Elektroversorgung,FF,0
+Behandlungsraum,HNF,0
+Wartezimmer,HNF,0
+Gemeinschaftsküche,HNF,0
+Verkehrsfläche,VF,0
+Aufzugsanlagen,VF,0
+Luftraum,,0
+Innenhof,,0
+Fabrikraum,HNF,0
+Empfangsraum,HNF,0
+Gemeinschaftsraum,HNF,0
+Werkstatt,HNF,0
+Garten,ANF,0
+Kantine,HNF,0
+Schutzraum,NNF,0
+Betriebsanlagen,FF,0
+Atelier,HNF,0
+Kühlraum,FF,0
+Transportschacht,VF,0
+Strahlentherapie,HNF,0
+Physiotherapie und Rehabilitation,HNF,0
+Wasserversorgung,FF,0
+Spezialisierter Behandlungsraum,HNF,0
+Sporträume,HNF,0
+Ausstellungsraum,HNF,0
+Gasversorgung,FF,0
+Unterrichtsraum,HNF,0
+Arkade,ANF,0
+Logistik,HNF,0
