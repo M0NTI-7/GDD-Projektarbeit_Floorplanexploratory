@@ -40,7 +40,8 @@ const flaechenfarbenSia416farben = {
 // --------------------------------------------------------------------------------
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color("#ffffff"); // weisser "Papier"-Hintergrund für den Blueprint-Look
+// Kein scene.background -> Canvas bleibt transparent, der weisse "Papier"-Hintergrund kommt jetzt
+// von der Seite (siehe index.html), damit die Donut-Overlays dahinter sichtbar durchscheinen können.
 
 let frustumSize = 50;
 
@@ -65,7 +66,8 @@ function kameraFrustumAktualisieren(aspect) {
   camera.updateProjectionMatrix();
 }
 
-const renderer = new THREE.WebGLRenderer({ antialias: true }); // glättet die Linie in der darstellung
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true }); // alpha: Canvas-Hintergrund transparent statt opak
+renderer.setClearColor(0x000000, 0); // alpha:true allein reicht nicht, sonst clear'd Three.js weiterhin opak (Standard: Schwarz, Alpha 1)
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(window.devicePixelRatio); // greift die Pixel des Bildschirms ab für die schärfe
 document.body.appendChild(renderer.domElement); // braucht es damit überhaupt etwas darstellt
@@ -98,29 +100,48 @@ window.addEventListener("resize", () => {
   }
 });
 
-// Verhalten: Hier wird die Beschriftung der Anzahl Räume definiert
+// Verhalten: Hier wird pro Gebäude eine HTML-Overlay-Gruppe (Donut + Zimmer-Legende) auf die
+// projizierte Bildschirmposition der Gebäudemitte gesetzt und mit dem Kamera-Zoom skaliert. Als
+// CSS-Elemente statt Three.js-Meshes sind Donut, Zimmer-Text und -Kreise dadurch garantiert
+// konsistent zueinander positioniert (feste Pixel-Abstände zueinander), schrumpfen aber gemeinsam
+// mit den Gebäuden beim Rauszoomen statt bei jeder Zoomstufe gleich gross zu bleiben.
 
-const anzahlRaumeBeschriftungen = []; // { position: THREE.Vector3, element: HTMLElement }
+const donutDurchmesserPx = 60; // einheitliche Bildschirmgrösse für alle Donuts
 
-function beschriftungHinzufuegen(text, textPosition) {
+const gebaeudeOverlays = []; // { position: THREE.Vector3, element: HTMLElement }
+
+function gebaeudeOverlayErstellen(mitteX, mitteZ, flaechePro416Kategorie, zimmerProWohnung) {
   const element = document.createElement("div");
-  element.className = "raum-beschriftung";
-  element.textContent = text;
+  element.className = "gebaeude-overlay";
+
+  const donut = donutErstellen(flaechePro416Kategorie);
+  if (donut) element.appendChild(donut);
+
+  const legende = zimmerLegendeErstellen(zimmerProWohnung);
+  if (legende) element.appendChild(legende);
+
   document.body.appendChild(element);
-  anzahlRaumeBeschriftungen.push({ position: textPosition, element });
+  gebaeudeOverlays.push({ position: new THREE.Vector3(mitteX, 0, mitteZ), element });
 }
 
-function beschriftungenAktualisieren() {
-  for (const { position, element } of anzahlRaumeBeschriftungen) {
+function gebaeudeOverlaysAktualisieren() {
+  // camera.zoom ist 1 im Moment der Kamera-Zentrierung (siehe kameraAufGebaeudeZentrieren) und
+  // ändert sich beim Scrollen über OrbitControls. Als Skalierungsfaktor sorgt das dafür, dass die
+  // Overlays beim Rauszoomen mit den Gebäuden mitschrumpfen statt starr 60px zu bleiben und sich
+  // beim Reinzoomen entsprechend vergrössern. Nach unten begrenzt, damit sie nie unsichtbar werden.
+  const massstab = Math.max(0.15, camera.zoom);
+
+  for (const { position, element } of gebaeudeOverlays) {
     const projiziert = position.clone().project(camera);
     element.style.left = `${((projiziert.x + 1) / 2) * window.innerWidth}px`;
     element.style.top = `${((1 - projiziert.y) / 2) * window.innerHeight}px`;
+    element.style.transform = `scale(${massstab})`;
   }
 }
 
 renderer.setAnimationLoop(() => {
   controls.update();
-  beschriftungenAktualisieren();
+  gebaeudeOverlaysAktualisieren();
   renderer.render(scene, camera);
 });
 
@@ -200,16 +221,15 @@ function gebaeudeDarstellen(zeilen) {
     const tiefe = maxY - minY;
 
     const radius = Math.sqrt(breite ** 2 + tiefe ** 2) / 2;
-    const ringInnenRadius = radius * 1.15; // kleiner Abstand zwischen Gebäude und Ring
-    const ringAussenRadius = ringInnenRadius + radius * 0.2; // Ring-Dicke ~20% des Radius
+    const ringAussenRadius = radius * 1.35; // 15% Abstand zum Gebäude + 20% Ringdicke, für Kamera-Zentrierung und Zimmer-Legende
 
     const flaechePro416Kategorie = {};
     const zimmerProWohnung = {};
 
     for (const zeile of zeilenDesGebaeudes) {
-      if (zeile.entitaet_typ === "Raum" && zeile.sia416_definition) {
-        flaechePro416Kategorie[zeile.sia416_definition] =
-          (flaechePro416Kategorie[zeile.sia416_definition] || 0) + (zeile.flaeche || 0);
+      if (zeile.entitaet_typ === "Raum" && zeile.definition) {
+        flaechePro416Kategorie[zeile.definition] =
+          (flaechePro416Kategorie[zeile.definition] || 0) + (zeile.flaeche || 0);
       }
       if (zeile.entitaet_typ === "Raum" && zeile.wohnungs_id) {
         zimmerProWohnung[zeile.wohnungs_id] =
@@ -222,12 +242,15 @@ function gebaeudeDarstellen(zeilen) {
       zeilen: zeilenMitPunkten,
       mitteX: minX + breite / 2,
       mitteZ: minY + tiefe / 2,
-      ringInnenRadius,
+      breite,
+      tiefe,
       ringAussenRadius,
       flaechePro416Kategorie,
       zimmerProWohnung,
     });
   }
+
+  gebaeudePacken(gebaeudeListe);
 
   const typGruppen = {}; // entitaet_typ -> { material, positionen, zeilen }
 
@@ -268,20 +291,89 @@ function gebaeudeDarstellen(zeilen) {
 
 // --------------------------------------------------------------------------------
 
+// Ziel: Gebäude sind wie Rechtecke gepackt "rectangle packaging", statt an ihrer realen
+
+// --------------------------------------------------------------------------------
+
+const gebaeudeAbstand = 1; // Meter Mindestabstand zwischen zwei gepackten Gebäuden
+const maxPackVersucheProGebaeude = 300;
+
+function gebaeudePacken(gebaeudeListe) {
+  const gesamtFlaeche = gebaeudeListe.reduce(
+    (summe, g) => summe + (g.breite + gebaeudeAbstand) * (g.tiefe + gebaeudeAbstand),
+    0
+  );
+  // Packfläche grosszügiger als die reine Summe wählen, sonst braucht der Zufalls-Algorithmus
+  // zu viele Versuche bzw. findet für die letzten Gebäude keinen Platz mehr.
+  // Das Seitenverhältnis der Packfläche folgt dem Fenster, damit die Anordnung wie im
+  // sketch.js-Original der Canvas-/Fenstergrösse entspricht statt quadratisch zu sein.
+  const fensterAspect = window.innerWidth / window.innerHeight;
+  const packHoehe = Math.sqrt(gesamtFlaeche / (0.4 * fensterAspect)); // 0.4 bedeutet 40% der Bildschirmfläche wird mit Gebäude dargestellt ?? evt. später mit einem Regler steuern
+  const packBreite = packHoehe * fensterAspect;
+
+  const platzierteBoxen = []; // { x, y, w, h } in Packflächen-Koordinaten (x/y = obere linke Ecke)
+
+  const sortiert = gebaeudeListe.slice().sort((a, b) => b.breite * b.tiefe - a.breite * a.tiefe);
+
+  for (const gebaeude of sortiert) {
+    const w = gebaeude.breite + gebaeudeAbstand;
+    const h = gebaeude.tiefe + gebaeudeAbstand;
+
+    let platziert = false;
+    for (let versuch = 0; versuch < maxPackVersucheProGebaeude; versuch++) {
+      const x = Math.random() * Math.max(0, packBreite - w);
+      const y = Math.random() * Math.max(0, packHoehe - h);
+
+      if (passtOhneUeberlappung(x, y, w, h, platzierteBoxen)) {
+        platzierteBoxen.push({ x, y, w, h });
+
+        const neueMitteX = x + w / 2;
+        const neueMitteZ = y + h / 2;
+        gebaeudeVerschieben(gebaeude, neueMitteX - gebaeude.mitteX, neueMitteZ - gebaeude.mitteZ);
+
+        platziert = true;
+        break;
+      }
+    }
+
+    if (!platziert) {
+      console.warn(`Gebäude ${gebaeude.gebaeude_id} konnte nicht gepackt werden (kein Platz gefunden).`); // ?? evt. können wir das später als text noch einfügen
+    }
+  }
+}
+
+function passtOhneUeberlappung(x, y, w, h, boxen) {
+  for (const box of boxen) {
+    if (x < box.x + box.w && x + w > box.x && y < box.y + box.h && y + h > box.y) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function gebaeudeVerschieben(gebaeude, dx, dz) {
+  gebaeude.mitteX += dx;
+  gebaeude.mitteZ += dz;
+
+  for (const zeile of gebaeude.zeilen) {
+    for (const kontur of zeile.konturen) {
+      for (const punkt of kontur) {
+        punkt[0] += dx;
+        punkt[1] += dz;
+      }
+    }
+  }
+}
+
+// --------------------------------------------------------------------------------
+
 // Ziel: SIA416-Donut und Zimmer-Legende sind pro Gebäude erstellt
 
 // --------------------------------------------------------------------------------
 
 function annotationenErstellen(gebaeudeListe) {
   for (const gebaeude of gebaeudeListe) {
-    donutErstellen(
-      gebaeude.mitteX,
-      gebaeude.mitteZ,
-      gebaeude.ringInnenRadius,
-      gebaeude.ringAussenRadius,
-      gebaeude.flaechePro416Kategorie
-    );
-    zimmerLegendeErstellen(gebaeude.mitteX, gebaeude.mitteZ, gebaeude.ringAussenRadius, gebaeude.zimmerProWohnung);
+    gebaeudeOverlayErstellen(gebaeude.mitteX, gebaeude.mitteZ, gebaeude.flaechePro416Kategorie, gebaeude.zimmerProWohnung);
   }
 }
 
@@ -319,43 +411,35 @@ function kameraAufGebaeudeZentrieren(gebaeudeListe) {
   controls.update();
 }
 
-
-
-
-
-
-
-
-
-
-
-
 // --------------------------------------------------------------------------------
 
 // Ziel: SIA416 Flächen sind als Donut um jedes Gebäude dargestellt
 
 // --------------------------------------------------------------------------------
 
-function donutErstellen(mitteX, mitteZ, innenRadius, aussenRadius, flaechePro416Kategorie) {
+function donutErstellen(flaechePro416Kategorie) {
   const Bruttogeschossflaeche = Object.values(flaechePro416Kategorie).reduce((summe, f) => summe + f, 0);
-  if (Bruttogeschossflaeche === 0) return; // keine kategorisierten Räume -> kein Donut zeichnen
+  if (Bruttogeschossflaeche === 0) return null; // keine kategorisierten Räume -> kein Donut
 
-  let winkel = 0; // Startwinkel des nächsten Segments, läuft von 0 bis 2*PI
+  let winkel = 0; // Startwinkel des nächsten Segments in Grad, läuft von 0 bis 360 (CSS conic-gradient)
+  const segmente = [];
   for (const [sia416_definition, flaeche] of Object.entries(flaechePro416Kategorie)) {
     const prozentAnteil = flaeche / Bruttogeschossflaeche;
-    const segmentWinkel = prozentAnteil * Math.PI * 2;
+    const segmentWinkel = prozentAnteil * 360;
 
     const donutFill = flaechenfarbenSia416farben[sia416_definition] || "#999999"; // Fallback, falls Kategorie keine Farbe hat
-    const donutGeometrie = new THREE.RingGeometry(innenRadius, aussenRadius, 100, 1, winkel, segmentWinkel); // 100 = Anzahl Segmente der einzelnen Segmente | 1 = keine Segmente vom inneren zum äusseren Ring
-    const donutMaterial = new THREE.MeshBasicMaterial({ color: donutFill}); // falls es auf beide Seiten gefärbt werden muss diesen teil reinkopieren ", side: THREE.DoubleSide" 
-    const donutSegment = new THREE.Mesh(donutGeometrie, donutMaterial);
-
-    donutSegment.rotation.x = -Math.PI / 2; // Ansicht wäre grundsätzlich von Vorne und muss gedreht werden
-    donutSegment.position.set(mitteX, 1, mitteZ); // 1 = 1m über dem Grundriss platziert
-    scene.add(donutSegment);
+    segmente.push(`${donutFill} ${winkel}deg ${winkel + segmentWinkel}deg`);
 
     winkel += segmentWinkel;
   }
+
+  const donut = document.createElement("div");
+  donut.className = "donut-overlay";
+  donut.style.width = `${donutDurchmesserPx}px`;
+  donut.style.height = `${donutDurchmesserPx}px`;
+  donut.style.background = `conic-gradient(${segmente.join(", ")})`;
+  donut.appendChild(document.createElement("div")).className = "donut-loch";
+  return donut;
 }
 
 // --------------------------------------------------------------------------------
@@ -364,48 +448,47 @@ function donutErstellen(mitteX, mitteZ, innenRadius, aussenRadius, flaechePro416
 
 // --------------------------------------------------------------------------------
 
-function kreisErstellen(mitteX, mitteZ, thetaLength = Math.PI * 2) {
-  const kreisRadius = 0.6; // Meter
-  const kreisDicke = 0.2; // Meter
-  const kreisSegmente = 32 // Anzahl Segemente rundherum
-  const kreisStartwinkel = 0
-  const geometrie = new THREE.RingGeometry(kreisRadius - kreisDicke, kreisRadius, kreisSegmente, 1, kreisStartwinkel, thetaLength);
-  const material = new THREE.MeshBasicMaterial({ color: "#000000", side: THREE.DoubleSide });
-  const kreis = new THREE.Mesh(geometrie, material);
-  kreis.rotation.x = -Math.PI / 2;
-  kreis.position.set(mitteX, 0.01, mitteZ);
-  scene.add(kreis);
+function kreisElementErstellen(halb = false) {
+  const kreis = document.createElement("span");
+  kreis.className = halb ? "zimmer-kreis zimmer-kreis-halb" : "zimmer-kreis";
+  return kreis;
 }
-function zimmerLegendeErstellen(mitteX, mitteZ, ringAussenRadius, zimmerProWohnung) {
+
+function zimmerLegendeErstellen(zimmerProWohnung) {
   const wohnungenProZimmerzahl = {};
   for (const zimmerzahl of Object.values(zimmerProWohnung)) {
     wohnungenProZimmerzahl[zimmerzahl] = (wohnungenProZimmerzahl[zimmerzahl] || 0) + 1;
   }
 
   const zimmerzahlen = Object.keys(wohnungenProZimmerzahl).map(Number).sort((a, b) => a - b); // Aufsteigend sortiert
+  if (zimmerzahlen.length === 0) return null;
 
-  const kreisAbstand = 1.6; // Meter zwischen Kreis-Mittelpunkten in einer Reihe
-  const reihenAbstand = 2.6; // Meter zwischen den Reihen
-  const abstandZumDonut = 2; // Meter Lücke zwischen Donut-Aussenkante und erster Reihe
+  const legende = document.createElement("div");
+  legende.className = "zimmer-legende";
 
-  zimmerzahlen.forEach((zimmerzahl, reihenIndex) => {
-    const reihenZ = mitteZ - ringAussenRadius - abstandZumDonut - reihenIndex * reihenAbstand;
+  for (const zimmerzahl of zimmerzahlen) {
     const volleKreise = Math.floor(zimmerzahl);
     const halberKreis = zimmerzahl - volleKreise >= 0.5;
-
     const anzahlWohnungen = wohnungenProZimmerzahl[zimmerzahl];
-    beschriftungHinzufuegen(`${anzahlWohnungen} Stk.`, new THREE.Vector3(mitteX - 3, 0, reihenZ)); // 3 = Abstand, damit der Text vor dem ersten Kreis nicht mit ihm überlappt
 
-    let kreisX = mitteX;
+    const reihe = document.createElement("div");
+    reihe.className = "zimmer-reihe";
+
+    const text = document.createElement("span");
+    text.textContent = `${anzahlWohnungen} Stk.`;
+    reihe.appendChild(text);
+
     for (let i = 0; i < volleKreise; i++) {
-      kreisErstellen(kreisX, reihenZ);
-      kreisX += kreisAbstand;
+      reihe.appendChild(kreisElementErstellen());
     }
     if (halberKreis) {
-      kreisErstellen(kreisX, reihenZ, Math.PI);
-      kreisX += kreisAbstand;
+      reihe.appendChild(kreisElementErstellen(true));
     }
-  });
+
+    legende.appendChild(reihe);
+  }
+
+  return legende;
 }
 
 // --------------------------------------------------------------------------------

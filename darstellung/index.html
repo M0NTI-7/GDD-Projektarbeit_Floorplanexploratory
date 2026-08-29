@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <title>Grundriss Darstellung</title>
   <style>
-    html, body { margin: 0; height: 100%; overflow: hidden; }
-    canvas { display: block; }
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #ffffff; } /* Papier-Hintergrund liegt jetzt auf der Seite, da der Canvas transparent ist */
+    canvas { display: block; position: relative; z-index: 1; }
 
     #infobox {
       display: none;
@@ -20,15 +20,67 @@
       pointer-events: none; /* Klicks sollen "durch" die Box zur Szene durchgehen */
     }
 
-    .raum-beschriftung {
+    /* Ein .gebaeude-overlay pro Gebäude wird per JS auf die projizierte Bildschirmposition der
+       Gebäudemitte gesetzt. Donut und Zimmer-Legende sind darin per CSS (in Pixeln statt Metern)
+       positioniert, damit sie zueinander garantiert konsistent bleiben, unabhängig vom Kamera-Zoom. */
+
+    .gebaeude-overlay {
       position: fixed;
-      z-index: 5;
+      z-index: 0; /* explizit kleiner als canvas (z-index: 1) -> Donut + Zimmer-Legende bleiben hinter den Grundriss-Linien */
+      pointer-events: none;
+    }
+
+    .donut-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      border-radius: 50%;
+      transform: translate(-50%, -50%); /* zentriert auf der Gebäudemitte */
+    }
+
+    .donut-loch {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 60%;
+      height: 60%;
+      background: #ffffff; /* deckt die Mitte ab, ergibt den Donut-Look */
+      border-radius: 50%;
+      transform: translate(-50%, -50%);
+    }
+
+    .zimmer-legende {
+      position: absolute;
+      top: 0;
+      left: 0;
+      transform: translate(-50%, 38px); /* 38px = halber Donut-Durchmesser (30px) + Lücke (8px) */
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .zimmer-reihe {
+      display: flex;
+      align-items: center;
+      gap: 4px;
       font-family: sans-serif;
       font-size: 12px;
       color: #000000;
       white-space: nowrap;
-      pointer-events: none;
-      transform: translate(0, -50%); /* vertikal auf der Linie zentrieren */
+    }
+
+    .zimmer-kreis {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      border: 1px solid #000000;
+      box-sizing: border-box;
+      flex: none;
+    }
+
+    .zimmer-kreis-halb {
+      clip-path: inset(0 50% 0 0); /* nur linke Hälfte des Rings sichtbar, für x.5 Zimmer */
     }
   </style>
 </head>
