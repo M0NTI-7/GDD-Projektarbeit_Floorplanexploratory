@@ -82,11 +82,173 @@
     .zimmer-kreis-halb {
       clip-path: inset(0 50% 0 0); /* nur linke Hälfte des Rings sichtbar, für x.5 Zimmer */
     }
+
+    :root {
+      --border: #d8d8d8;
+      --series-wohnungen: #34495e;
+      --series-zimmer: #8e44ad;
+      --series-gf: #16a085;
+      --series-geschossigkeit: #d35400;
+      --series-zimmergroesse: #2980b9;
+      --series-kuechengroesse: #f39c12;
+      --series-balkongroesse: #c0392b;
+      --series-anzahl-badezimmer: #2c3e50;
+      --series-wohnungsgroesse: #27ae60;
+      --series-anzahl-wohnungen-pro-geschoss: #7f8c8d;
+    }
+
+    .filter-panel {
+      position: fixed;
+      z-index: 20; /* über Canvas (1) und Gebäude-Overlays (0) */
+      top: 0;
+      right: 0;
+      width: 280px;
+      height: 100%;
+      overflow-y: auto;
+      box-sizing: border-box;
+      padding: 16px;
+      background: #ffffff;
+      border-left: 1px solid var(--border);
+      font-family: sans-serif;
+      color: #000000;
+    }
+
+    .filter-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+      font-size: 13px;
+    }
+
+    .filter-header button {
+      font: inherit;
+      padding: 4px 10px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: #ffffff;
+      cursor: pointer;
+    }
+
+    .filter-header button:disabled {
+      opacity: 0.4;
+      cursor: default;
+    }
+
+    .chart-card {
+      margin-bottom: 22px;
+    }
+
+    .chart-card h3 {
+      margin: 0 0 6px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .chart-svg {
+      display: block;
+      width: 100%;
+      height: auto;
+      aspect-ratio: 400 / 220;
+      touch-action: none;
+      cursor: crosshair;
+      overflow: visible;
+    }
+
+    .chart-svg .gridline {
+      stroke: var(--border);
+      stroke-width: 1;
+    }
+
+    .chart-svg .baseline {
+      stroke: #000000;
+      stroke-width: 1;
+    }
+
+    .chart-svg .bar-label {
+      font-size: 9px;
+      fill: #555555;
+    }
+
+    .filter-tooltip {
+      position: fixed;
+      z-index: 30;
+      background: #ffffff;
+      border: 1px solid #000000;
+      padding: 6px 10px;
+      font-family: sans-serif;
+      font-size: 12px;
+      line-height: 1.4;
+      pointer-events: none;
+      transform: translate(12px, 12px);
+    }
   </style>
 </head>
 <body>
 
   <div id="infobox"></div>
+
+  <aside class="filter-panel">
+    <div class="filter-header">
+      <div><span id="stat-count">0</span> / <span id="stat-total">0</span> Wohnungen</div>
+      <button id="filter-reset" disabled>Zurücksetzen</button>
+    </div>
+
+    <div class="chart-card" data-dim="wohnungen">
+      <h3>Wohnungen pro Gebäude</h3>
+      <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+    </div>
+
+    <div class="chart-card" data-dim="zimmer">
+      <h3>Zimmer pro Wohnung</h3>
+      <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+    </div>
+
+    <div class="chart-card" data-dim="gf">
+      <h3>Geschossfläche (GF)</h3>
+      <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+    </div>
+
+    <div class="chart-card" data-dim="geschossigkeit">
+      <h3>Geschossigkeit</h3>
+      <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+    </div>
+
+    <div class="chart-card" data-dim="wohnungsgroesse">
+      <h3>Wohnungsgrösse</h3>
+      <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+    </div>
+
+    <div class="chart-card" data-dim="zimmergroesse">
+      <h3>Zimmergrösse</h3>
+      <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+    </div>
+
+    <div class="chart-card" data-dim="kuechengroesse">
+      <h3>Küchengrösse</h3>
+      <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+    </div>
+
+    <div class="chart-card" data-dim="balkongroesse">
+      <h3>Balkongrösse</h3>
+      <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+    </div>
+
+    <div class="chart-card" data-dim="anzahlBadezimmer">
+      <h3>Anzahl Badezimmer</h3>
+      <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+    </div>
+
+    <div class="chart-card" data-dim="anzahlWohnungenProGeschoss">
+      <h3>Anzahl Wohnungen pro Geschoss</h3>
+      <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+    </div>
+  </aside>
+
+  <div id="filter-tooltip" class="filter-tooltip" hidden>
+    <div class="filter-tooltip-value"></div>
+    <div class="filter-tooltip-label"></div>
+  </div>
 
   <!-- Import Map: definiert, woher der Browser "three" und "three/addons/" beim import laden soll -->
   <script type="importmap">
