@@ -9,6 +9,10 @@ ZIEL = os.path.join(SCRIPT_DIR, "geometries_final_angereichert.csv")
 
 sia416 = pd.read_csv(os.path.join(SCRIPT_DIR, "flaechen-sia416.csv"))
 
+AUSGESCHLOSSENE_GEBAEUDE_IDS = {
+    18278
+    }  # anpassen: gebaeude_id's, die nicht übernommen werden sollen
+
 SPALTEN = [
     "parzellen_id",
     "gebaeude_id",
@@ -35,6 +39,9 @@ unbekannte_raumtypen = set()
 for i, chunk in enumerate(pd.read_csv(QUELLE, chunksize=150_000)):
     # "Element" (Wände, Geländer, Stützen) rausnehmen - wird in der Darstellung nicht gebraucht
     chunk = chunk[chunk["entitaet_typ"] != "Element"].copy()
+
+    # Ausgeschlossene Gebäude rausnehmen (z.B. fehlerhafte Geometrien/Werte)
+    chunk = chunk[~chunk["gebaeude_id"].isin(AUSGESCHLOSSENE_GEBAEUDE_IDS)]
 
     # Fläche der Räume und Geschossflächen aus der Geometrie berechnen (fehlt in geometries_final.csv)
     flaeche_berechnen = chunk["entitaet_typ"].isin(["Raum", "Geschossfläche"])

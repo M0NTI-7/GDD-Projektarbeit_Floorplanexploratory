@@ -1,11 +1,24 @@
 <!doctype html>
 <html lang="de">
+
 <head>
   <meta charset="utf-8">
   <title>Grundriss Darstellung</title>
   <style>
-    html, body { margin: 0; height: 100%; overflow: hidden; background: #e5e5e5; } /* Papier-Hintergrund liegt jetzt auf der Seite, da der Canvas transparent ist */
-    canvas { display: block; position: relative; z-index: 1; }
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #e5e5e5;
+    }
+
+    /* Papier-Hintergrund liegt jetzt auf der Seite, da der Canvas transparent ist */
+    canvas {
+      display: block;
+      position: relative;
+      z-index: 1;
+    }
 
     #infobox {
       display: none;
@@ -17,7 +30,8 @@
       font-family: sans-serif;
       font-size: 13px;
       line-height: 1.5;
-      pointer-events: none; /* Klicks sollen "durch" die Box zur Szene durchgehen */
+      pointer-events: none;
+      /* Klicks sollen "durch" die Box zur Szene durchgehen */
     }
 
     /* Ein .gebaeude-overlay pro Gebäude wird per JS auf die projizierte Bildschirmposition der
@@ -26,7 +40,8 @@
 
     .gebaeude-overlay {
       position: fixed;
-      z-index: 0; /* explizit kleiner als canvas (z-index: 1) -> Donut + Zimmer-Legende bleiben hinter den Grundriss-Linien */
+      z-index: 0;
+      /* explizit kleiner als canvas (z-index: 1) -> Donut + Zimmer-Legende bleiben hinter den Grundriss-Linien */
       pointer-events: none;
     }
 
@@ -35,7 +50,8 @@
       top: 0;
       left: 0;
       border-radius: 50%;
-      transform: translate(-50%, -50%); /* zentriert auf der Gebäudemitte */
+      transform: translate(-50%, -50%);
+      /* zentriert auf der Gebäudemitte */
     }
 
     .donut-loch {
@@ -44,7 +60,8 @@
       left: 50%;
       width: 60%;
       height: 60%;
-      background: #ffffff; /* deckt die Mitte ab, ergibt den Donut-Look */
+      background: #ffffff;
+      /* deckt die Mitte ab, ergibt den Donut-Look */
       border-radius: 50%;
       transform: translate(-50%, -50%);
     }
@@ -53,7 +70,8 @@
       position: absolute;
       top: 0;
       left: 0;
-      transform: translate(-50%, 38px); /* 38px = halber Donut-Durchmesser (30px) + Lücke (8px) */
+      transform: translate(-50%, 38px);
+      /* 38px = halber Donut-Durchmesser (30px) + Lücke (8px) */
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -80,18 +98,25 @@
     }
 
     .zimmer-kreis-halb {
-      clip-path: inset(0 50% 0 0); /* nur linke Hälfte des Rings sichtbar, für x.5 Zimmer */
+      clip-path: inset(0 50% 0 0);
+      /* nur linke Hälfte des Rings sichtbar, für x.5 Zimmer */
     }
 
     :root {
       --border: #d8d8d8;
+      --series-geschoss: #b8860b;
       --series-wohnungen: #34495e;
       --series-zimmer: #8e44ad;
       --series-gf: #16a085;
+      --series-hnf-anteil: #1abc9c;
+      --series-gebaeudetiefe: #566573;
       --series-geschossigkeit: #d35400;
-      --series-zimmergroesse: #2980b9;
+      --series-wohnen-schlafen-groesse: #2980b9;
+      --series-esszimmergroesse: #9b59b6;
       --series-kuechengroesse: #f39c12;
       --series-balkongroesse: #c0392b;
+      --series-reduitgroesse: #8d6e63;
+      --series-nasszellengroesse: #16697a;
       --series-anzahl-badezimmer: #2c3e50;
       --series-wohnungsgroesse: #27ae60;
       --series-anzahl-wohnungen-pro-geschoss: #7f8c8d;
@@ -99,7 +124,8 @@
 
     .filter-panel {
       position: fixed;
-      z-index: 20; /* über Canvas (1) und Gebäude-Overlays (0) */
+      z-index: 20;
+      /* über Canvas (1) und Gebäude-Overlays (0) */
       top: 0;
       right: 0;
       width: 280px;
@@ -121,6 +147,12 @@
       font-size: 13px;
     }
 
+    .filter-stats {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
     .filter-header button {
       font: inherit;
       padding: 4px 10px;
@@ -133,6 +165,44 @@
     .filter-header button:disabled {
       opacity: 0.4;
       cursor: default;
+    }
+
+    .filter-group {
+      margin-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .filter-group summary {
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 700;
+      padding: 10px 0;
+      list-style: none;
+      /* eigenes Dreieck statt der Browser-Standard-Markierung */
+    }
+
+    .filter-group summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .filter-group summary::before {
+      content: "▸";
+      display: inline-block;
+      width: 1em;
+      color: #888888;
+    }
+
+    .filter-group[open] summary::before {
+      content: "▾";
+    }
+
+    .chart-subgroup-label {
+      margin: 0 0 6px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      color: #888888;
     }
 
     .chart-card {
@@ -184,65 +254,121 @@
     }
   </style>
 </head>
+
 <body>
 
   <div id="infobox"></div>
 
   <aside class="filter-panel">
     <div class="filter-header">
-      <div><span id="stat-count">0</span> / <span id="stat-total">0</span> Wohnungen</div>
+      <div class="filter-stats">
+        <div><span id="stat-gebaeude-count">0</span> / <span id="stat-gebaeude-total">0</span> Gebäude</div>
+        <div><span id="stat-count">0</span> / <span id="stat-total">0</span> Wohnungen</div>
+      </div>
       <button id="filter-reset" disabled>Zurücksetzen</button>
     </div>
 
-    <div class="chart-card" data-dim="wohnungen">
-      <h3>Wohnungen pro Gebäude</h3>
-      <svg class="chart-svg" viewBox="0 0 400 220"></svg>
-    </div>
+    <details class="filter-group" open>
+      <summary>Geschoss</summary>
 
-    <div class="chart-card" data-dim="zimmer">
-      <h3>Zimmer pro Wohnung</h3>
-      <svg class="chart-svg" viewBox="0 0 400 220"></svg>
-    </div>
+      <div class="chart-card" data-dim="geschoss">
+        <h3>Geschoss</h3>
+        <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+      </div>
+    </details>
 
-    <div class="chart-card" data-dim="gf">
-      <h3>Geschossfläche (GF)</h3>
-      <svg class="chart-svg" viewBox="0 0 400 220"></svg>
-    </div>
+    <details class="filter-group" open>
+      <summary>Gebäude</summary>
 
-    <div class="chart-card" data-dim="geschossigkeit">
-      <h3>Geschossigkeit</h3>
-      <svg class="chart-svg" viewBox="0 0 400 220"></svg>
-    </div>
+      <div class="chart-card" data-dim="gf">
+        <h3>Geschossfläche (GF)</h3>
+        <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+      </div>
 
-    <div class="chart-card" data-dim="wohnungsgroesse">
-      <h3>Wohnungsgrösse</h3>
-      <svg class="chart-svg" viewBox="0 0 400 220"></svg>
-    </div>
+      <div class="chart-card" data-dim="hnfAnteil">
+        <h3>Anteil HNF an GF</h3>
+        <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+      </div>
 
-    <div class="chart-card" data-dim="zimmergroesse">
-      <h3>Zimmergrösse</h3>
-      <svg class="chart-svg" viewBox="0 0 400 220"></svg>
-    </div>
+      <div class="chart-card" data-dim="wohnungen">
+        <h3>Anzahl WHG pro Gebäude</h3>
+        <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+      </div>
 
-    <div class="chart-card" data-dim="kuechengroesse">
-      <h3>Küchengrösse</h3>
-      <svg class="chart-svg" viewBox="0 0 400 220"></svg>
-    </div>
+      <div class="chart-card" data-dim="anzahlWohnungenProGeschoss">
+        <h3>Anzahl WHG pro Geschoss</h3>
+        <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+      </div>
 
-    <div class="chart-card" data-dim="balkongroesse">
-      <h3>Balkongrösse</h3>
-      <svg class="chart-svg" viewBox="0 0 400 220"></svg>
-    </div>
+      <div class="chart-card" data-dim="gebaeudetiefe">
+        <h3>Gebäudetiefe</h3>
+        <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+      </div>
 
-    <div class="chart-card" data-dim="anzahlBadezimmer">
-      <h3>Anzahl Badezimmer</h3>
-      <svg class="chart-svg" viewBox="0 0 400 220"></svg>
-    </div>
+      <div class="chart-card" data-dim="geschossigkeit">
+        <h3>Geschossigkeit</h3>
+        <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+      </div>
+    </details>
 
-    <div class="chart-card" data-dim="anzahlWohnungenProGeschoss">
-      <h3>Anzahl Wohnungen pro Geschoss</h3>
-      <svg class="chart-svg" viewBox="0 0 400 220"></svg>
-    </div>
+    <details class="filter-group" open>
+      <summary>Wohnungen</summary>
+
+      <div class="chart-card" data-dim="zimmer">
+        <h3>Zimmer pro WHG</h3>
+        <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+      </div>
+
+      <div class="chart-card" data-dim="wohnungsgroesse">
+        <h3>Wohnungsgrösse</h3>
+        <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+      </div>
+
+      <div class="chart-card" data-dim="anzahlBadezimmer">
+        <h3>Anzahl Badezimmer</h3>
+        <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+      </div>
+    </details>
+
+    <details class="filter-group" open>
+      <summary>Zimmer</summary>
+
+      <p class="chart-subgroup-label">Kochen</p>
+      <div class="chart-card" data-dim="kuechengroesse">
+        <h3>Küchengrösse</h3>
+        <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+      </div>
+
+      <p class="chart-subgroup-label">Essen</p>
+      <div class="chart-card" data-dim="esszimmergroesse">
+        <h3>Esszimmergrösse</h3>
+        <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+      </div>
+
+      <p class="chart-subgroup-label">Wohnen / Schlafen</p>
+      <div class="chart-card" data-dim="wohnenSchlafenGroesse">
+        <h3>Zimmergrösse</h3>
+        <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+      </div>
+
+      <p class="chart-subgroup-label">Private Freibereiche</p>
+      <div class="chart-card" data-dim="balkongroesse">
+        <h3>Balkongrösse</h3>
+        <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+      </div>
+
+      <p class="chart-subgroup-label">Aufbewahren</p>
+      <div class="chart-card" data-dim="reduitgroesse">
+        <h3>Reduitgrösse</h3>
+        <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+      </div>
+
+      <p class="chart-subgroup-label">Nasszellen</p>
+      <div class="chart-card" data-dim="nasszellengroesse">
+        <h3>Nasszellengrösse</h3>
+        <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+      </div>
+    </details>
   </aside>
 
   <div id="filter-tooltip" class="filter-tooltip" hidden>
@@ -267,4 +393,5 @@
   <script type="module" src="main.js"></script>
 
 </body>
+
 </html>

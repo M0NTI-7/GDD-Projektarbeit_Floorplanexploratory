@@ -256,11 +256,15 @@ function gebaeudeDarstellen(zeilen) {
     let gf = 0;
 
     // Pro-Wohnung-Kennzahlen (unabhängig von der SIA416-Kategorie): Gesamtfläche der Wohnung sowie
-    // die Fläche ihrer Zimmer-/Küchen-/Balkon-artigen Räume und die Anzahl Badezimmer.
+    // die Fläche ihrer Zimmerprogramm-Räume (Wohnen/Schlafen, Essen, Küche, Balkon, Reduit, Nasszelle)
+    // und die Anzahl Badezimmer.
     const wohnungsFlaeche = {};
-    const zimmerFlaechen = {}; // wohnungId -> [Fläche, Fläche, ...] (jedes Zimmer einzeln, nicht summiert)
+    const wohnenSchlafenFlaechen = {}; // wohnungId -> [Fläche, Fläche, ...] (jedes Zimmer einzeln, nicht summiert)
+    const esszimmerFlaechen = {}; // wohnungId -> [Fläche, ...]
     const kuecheFlaeche = {};
     const balkonFlaeche = {};
+    const reduitFlaeche = {};
+    const nasszelleFlaeche = {};
     const badAnzahl = {};
 
     // Für "Anzahl Wohnungen pro Geschoss": pro Geschoss die Menge der dort liegenden Wohnungen,
@@ -282,12 +286,18 @@ function gebaeudeDarstellen(zeilen) {
 
         zimmerProWohnung[wohnungId] = (zimmerProWohnung[wohnungId] || 0) + (zeile.zimmer_zaehler || 0);
         wohnungsFlaeche[wohnungId] = (wohnungsFlaeche[wohnungId] || 0) + flaeche;
-        if (ZIMMER_SUBTYPEN.has(zeile.entitaet_subtyp)) {
-          if (!zimmerFlaechen[wohnungId]) zimmerFlaechen[wohnungId] = [];
-          zimmerFlaechen[wohnungId].push(flaeche);
+        if (WOHNEN_SCHLAFEN_SUBTYPEN.has(zeile.entitaet_subtyp)) {
+          if (!wohnenSchlafenFlaechen[wohnungId]) wohnenSchlafenFlaechen[wohnungId] = [];
+          wohnenSchlafenFlaechen[wohnungId].push(flaeche);
+        }
+        if (ESSEN_SUBTYPEN.has(zeile.entitaet_subtyp)) {
+          if (!esszimmerFlaechen[wohnungId]) esszimmerFlaechen[wohnungId] = [];
+          esszimmerFlaechen[wohnungId].push(flaeche);
         }
         if (KUECHE_SUBTYPEN.has(zeile.entitaet_subtyp)) kuecheFlaeche[wohnungId] = (kuecheFlaeche[wohnungId] || 0) + flaeche;
         if (BALKON_SUBTYPEN.has(zeile.entitaet_subtyp)) balkonFlaeche[wohnungId] = (balkonFlaeche[wohnungId] || 0) + flaeche;
+        if (REDUIT_SUBTYPEN.has(zeile.entitaet_subtyp)) reduitFlaeche[wohnungId] = (reduitFlaeche[wohnungId] || 0) + flaeche;
+        if (NASSZELLE_SUBTYPEN.has(zeile.entitaet_subtyp)) nasszelleFlaeche[wohnungId] = (nasszelleFlaeche[wohnungId] || 0) + flaeche;
         if (zeile.entitaet_subtyp === "Badezimmer") badAnzahl[wohnungId] = (badAnzahl[wohnungId] || 0) + 1;
 
         if (!wohnungenJeGeschoss.has(zeile.geschoss_label)) wohnungenJeGeschoss.set(zeile.geschoss_label, new Set());
@@ -308,6 +318,7 @@ function gebaeudeDarstellen(zeilen) {
     for (const [wohnungId, geschoss] of heimGeschossProWohnung) {
       wohnungenProGeschoss[wohnungId] = wohnungenJeGeschoss.get(geschoss).size;
     }
+    const heimGeschoss = Object.fromEntries(heimGeschossProWohnung);
 
     gebaeudeListe.push({
       gebaeude_id,
@@ -321,13 +332,18 @@ function gebaeudeDarstellen(zeilen) {
       zimmerProWohnung,
       geschossigkeit: geschossIds.size,
       gf,
+      hnfAnteil: gf > 0 ? ((flaechePro416Kategorie["HNF"] || 0) / gf) * 100 : 0, // in Prozent, nicht als Bruch (0-1)
       wohnungenAnzahl: Object.keys(zimmerProWohnung).length,
       wohnungsFlaeche,
-      zimmerFlaechen,
+      wohnenSchlafenFlaechen,
+      esszimmerFlaechen,
       kuecheFlaeche,
       balkonFlaeche,
+      reduitFlaeche,
+      nasszelleFlaeche,
       badAnzahl,
       wohnungenProGeschoss,
+      heimGeschoss,
     });
   }
 
@@ -344,15 +360,24 @@ function gebaeudeDarstellen(zeilen) {
   gebaeudeNachId = new Map(gebaeudeListe.map((gebaeude) => [gebaeude.gebaeude_id, gebaeude]));
 
   for (const gebaeude of gebaeudeListe) {
-    const typGruppen = {}; // entitaet_typ -> { positionen, zeilen } (nur für dieses Gebäude)
+    // Gruppiert nach entitaet_typ UND geschoss_label (statt nur entitaet_typ) - jedes Geschoss
+    // bekommt so sein eigenes Material und kann unabhängig ein-/ausgeblendet werden (siehe
+    // gebaeudeDimmingAktualisieren, Geschoss-Filter).
+    const geschossGruppen = {};
 
     for (const zeile of gebaeude.zeilen) {
       if (!stiftfarbeUmfassungslinie[zeile.entitaet_typ]) continue;
 
-      if (!typGruppen[zeile.entitaet_typ]) {
-        typGruppen[zeile.entitaet_typ] = { positionen: [], zeilen: [] };
+      const schluessel = `${zeile.entitaet_typ}|${zeile.geschoss_label}`;
+      if (!geschossGruppen[schluessel]) {
+        geschossGruppen[schluessel] = {
+          positionen: [],
+          zeilen: [],
+          entitaetTyp: zeile.entitaet_typ,
+          geschossLabel: zeile.geschoss_label,
+        };
       }
-      const gruppe = typGruppen[zeile.entitaet_typ];
+      const gruppe = geschossGruppen[schluessel];
 
       for (const kontur of zeile.konturen) {
         segmenteHinzufuegen(gruppe.positionen, kontur);
@@ -363,15 +388,15 @@ function gebaeudeDarstellen(zeilen) {
       }
     }
 
-    gebaeude.linienMaterialien = [];
+    gebaeude.linienMaterialien = []; // { material, geschossLabel }
     gebaeude.linienObjekte = []; // für gebaeudePositionSetzen (Neu-Packen beim Filtern)
 
-    for (const [entitaetTyp, gruppe] of Object.entries(typGruppen)) {
-      const material = stiftfarbeUmfassungslinie[entitaetTyp].clone();
+    for (const gruppe of Object.values(geschossGruppen)) {
+      const material = stiftfarbeUmfassungslinie[gruppe.entitaetTyp].clone();
       material.transparent = true; // ermöglicht opacity 0 zum Ausblenden, siehe gebaeudeDimmingAktualisieren
       renderer.getSize(material.resolution);
       gebaeudeLinienMaterialien.push(material);
-      gebaeude.linienMaterialien.push(material);
+      gebaeude.linienMaterialien.push({ material, geschossLabel: gruppe.geschossLabel });
 
       const geometrie = new LineSegmentsGeometry();
       geometrie.setPositions(gruppe.positionen);
@@ -665,6 +690,7 @@ renderer.domElement.addEventListener("click", (e) => {
 
   infobox.innerHTML = `
     <strong>${zeile.entitaet_subtyp ?? "–"}</strong><br>
+    Gebäude-ID: ${zeile.gebaeude_id ?? "–"}<br>
     Geschoss: ${zeile.geschoss_label ?? "–"}<br>
     Fläche: ${(zeile.entitaet_typ === "Raum" || zeile.entitaet_typ === "Geschossfläche") ? zeile.flaeche + " m2" : ""}<br>
   `;
@@ -700,17 +726,27 @@ function flaecheAusKonturen(konturen) {
 // --------------------------------------------------------------------------------
 
 // Ziel: Gebäude ohne zum Filter passende Wohnung sind ausgeblendet, indem die Materialien ihrer
-// eigenen Linien (siehe gebaeude.linienMaterialien) auf opacity 0 gesetzt werden
+// eigenen Linien (siehe gebaeude.linienMaterialien) auf opacity 0 gesetzt werden. Zusätzlich blendet
+// ein aktiver Geschoss-Filter innerhalb jedes (weiterhin sichtbaren) Gebäudes alle nicht ausgewählten
+// Geschosse aus, da jedes Geschoss dank der Gruppierung in gebaeudeDarstellen sein eigenes Material hat.
 
 // --------------------------------------------------------------------------------
 
-function gebaeudeDimmingAktualisieren(matchAnzahlProGebaeude) {
-  for (const [gebaeude_id, gebaeude] of gebaeudeNachId) {
-    if (gebaeude.wohnungenAnzahl === 0) continue; // kein Wohngebäude -> nie ausblenden
+function gebaeudeDimmingAktualisieren(matchAnzahlProGebaeude, ausgewaehlteGeschosse) {
+  const geschossFilterAktiv = ausgewaehlteGeschosse.size > 0;
 
-    const dimmen = !(matchAnzahlProGebaeude.get(gebaeude_id) > 0);
-    for (const material of gebaeude.linienMaterialien) material.opacity = dimmen ? 0 : 1;
-    gebaeude.overlayElement.style.display = dimmen ? "none" : "";
+  for (const [gebaeude_id, gebaeude] of gebaeudeNachId) {
+    // kein Wohngebäude -> nie wegen Wohnungs-Filtern ausblenden, Geschoss-Filter gilt aber trotzdem
+    const dimmenGebaeude = gebaeude.wohnungenAnzahl === 0 ? false : !(matchAnzahlProGebaeude.get(gebaeude_id) > 0);
+
+    for (const { material, geschossLabel } of gebaeude.linienMaterialien) {
+      const dimmenGeschoss = geschossFilterAktiv && !ausgewaehlteGeschosse.has(geschossLabel);
+      material.opacity = dimmenGebaeude || dimmenGeschoss ? 0 : 1;
+    }
+
+    if (gebaeude.wohnungenAnzahl > 0) {
+      gebaeude.overlayElement.style.display = dimmenGebaeude ? "none" : "";
+    }
   }
 }
 
@@ -761,17 +797,25 @@ function gebaeudePositionenAktualisieren(matchAnzahlProGebaeude, filterAktiv) {
 
 // --------------------------------------------------------------------------------
 
-// Ziel: Crossfilter-Panel über die Wohnungs-Kennzahlen (Wohnungen pro Gebäude, Zimmer pro Wohnung,
-// Geschossfläche, Geschossigkeit, Zimmer-/Küchen-/Balkongrösse, Anzahl Badezimmer, Wohnungsgrösse,
-// Anzahl Wohnungen pro Geschoss). Ein "Item" ist eine Wohnung; die gebäude-/geschossbezogenen
-// Kennzahlen werden jeder Wohnung mitgegeben, die übrigen sind der eigene Wert der Wohnung.
+// Ziel: Crossfilter-Panel über die Wohnungs-Kennzahlen, gruppiert nach Gebäude / Wohnungen / Zimmer
+// (Geschossfläche, Anteil HNF an GF, Gebäudetiefe, Geschossigkeit, Wohnungen pro Gebäude/Geschoss,
+// Zimmer pro Wohnung, Wohnungsgrösse, Anzahl Badezimmer, sowie die Zimmerprogramm-Grössen Kochen/
+// Essen/Wohnen-Schlafen/Freibereiche/Aufbewahren/Nasszellen). Ein "Item" ist eine Wohnung; die
+// gebäude-/geschossbezogenen Kennzahlen werden jeder Wohnung mitgegeben, die übrigen sind der eigene
+// Wert der Wohnung.
 
 // --------------------------------------------------------------------------------
 
-// Welche entitaet_subtyp-Werte zu welcher Raumart zählen (für Zimmer-/Küchen-/Balkongrösse)
-const ZIMMER_SUBTYPEN = new Set(["Zimmer", "Wohnzimmer", "Esszimmer", "Schlafzimmer", "Wohn-/Esszimmer"]);
+// Welche entitaet_subtyp-Werte zu welcher Raumart zählen (für die Zimmerprogramm-Kennzahlen unter
+// "Zimmer"). "Wohn-/Esszimmer" zählt bewusst zu Wohnen/Schlafen UND zu Essen, da dieser Raum beide
+// Funktionen kombiniert - das dupliziert die Fläche nicht innerhalb einer Dimension, nur über zwei
+// verschiedene Dimensionen hinweg.
+const WOHNEN_SCHLAFEN_SUBTYPEN = new Set(["Zimmer", "Wohnzimmer", "Schlafzimmer", "Wohn-/Esszimmer"]);
+const ESSEN_SUBTYPEN = new Set(["Esszimmer", "Wohn-/Esszimmer"]);
 const KUECHE_SUBTYPEN = new Set(["Küche", "Wohnküche"]);
 const BALKON_SUBTYPEN = new Set(["Balkon", "Aussenraum", "Loggia", "Terrasse", "Wintergarten", "Garten", "Arkade"]);
+const REDUIT_SUBTYPEN = new Set(["Abstellraum"]);
+const NASSZELLE_SUBTYPEN = new Set(["Badezimmer", "Toilette", "Dusche"]);
 
 let WOHNUNGEN = [];
 let gebaeudeNachId = new Map();
@@ -786,50 +830,28 @@ function wohnungenAufbauen(gebaeudeListe) {
         zimmer,
         wohnungenProGebaeude: gebaeude.wohnungenAnzahl,
         gf: gebaeude.gf,
+        hnfAnteil: gebaeude.hnfAnteil,
+        gebaeudetiefe: gebaeude.tiefe,
         geschossigkeit: gebaeude.geschossigkeit,
         wohnungsgroesse: gebaeude.wohnungsFlaeche[wohnungId] || 0,
-        zimmergroessen: gebaeude.zimmerFlaechen[wohnungId] || [],
+        wohnenSchlafenGroessen: gebaeude.wohnenSchlafenFlaechen[wohnungId] || [],
+        esszimmergroessen: gebaeude.esszimmerFlaechen[wohnungId] || [],
         kuechengroesse: gebaeude.kuecheFlaeche[wohnungId] || 0,
         balkongroesse: gebaeude.balkonFlaeche[wohnungId] || 0,
+        reduitgroesse: gebaeude.reduitFlaeche[wohnungId] || 0,
+        nasszellengroesse: gebaeude.nasszelleFlaeche[wohnungId] || 0,
         anzahlBadezimmer: gebaeude.badAnzahl[wohnungId] || 0,
         anzahlWohnungenProGeschoss: gebaeude.wohnungenProGeschoss[wohnungId] || 0,
+        geschoss: gebaeude.heimGeschoss[wohnungId],
       });
     }
   }
   return wohnungen;
 }
 
-const WOHNUNGEN_PRO_GEBAEUDE_BINS = [
-  { max: 1, label: "1 Wohnung" },
-  { max: 2, label: "2 Wohnungen" },
-  { max: 3, label: "3 Wohnungen" },
-  { max: 4, label: "4 Wohnungen" },
-  { max: 7, label: "5-7 Wohnungen" },
-  { max: 12, label: "8 -12 Wohnungen" },
-  { max: 20, label: "13 - 20 Wohnungen" },
-  { max: 50, label: "21 - 50 Wohnungen" },
-  { max: 100, label: "51 - 100 Wohnungen" },
-  { max: 200, label: "101 - 200 Wohnungen" },
-  { max: Infinity, label: "> 200 Wohnungen" },
-];
 
-const GF_BINS = [
-  { max: 500, label: "< 500 m²" },
-  { max: 1000, label: "500–1000 m²" },
-  { max: 1500, label: "1000–2000 m²" },
-  { max: 2000, label: "1000–2000 m²" },
-  { max: 3500, label: "2000–3500 m²" },
-  { max: 5000, label: "3500-5000 m²" },
-  { max: Infinity, label: "> 5000 m²" },
-];
 
-const WOHNUNGSGROESSE_BINS = [
-  { max: 60, label: "< 60 m²" },
-  { max: 75, label: "60–75 m²" },
-  { max: 95, label: "75–95 m²" },
-  { max: 130, label: "95–130 m²" },
-  { max: Infinity, label: "> 130 m²" },
-];
+
 
 
 
@@ -839,62 +861,78 @@ const WOHNUNGSGROESSE_BINS = [
 
 // --------------------------------------------------------------------------------
 
-
-// Gleichmässige Bins schritt, 2*schritt, ..., anzahl*schritt (jeweils als eigenes Label), plus ein
-// abschliessendes "> Maximum"-Sammel-Bin für alles darüber.
-function gleichmaessigeBins(schritt, anzahl, einheit) {
+// start verschiebt den Beginn der Schrittfolge nach oben (Default 0 = bei schritt beginnen), für
+// Kennzahlen deren Werte erst ab einem höheren Minimum vorkommen (z.B. Anteil HNF an GF ab ca. 35%),
+// damit keine Bins für einen Bereich verschwendet werden, der in den Daten nie vorkommt.
+function gleichmaessigeBins(start, schritt, anzahl, einheit) {
   const bins = Array.from({ length: anzahl }, (_, i) => {
-    const max = (i + 1) * schritt;
+    const max = start + (i + 1) * schritt;
     return { max, label: `${max} ${einheit}` };
   });
-  bins.push({ max: Infinity, label: `> ${anzahl * schritt} ${einheit}` });
+  bins.push({ max: Infinity, label: `> ${start + anzahl * schritt} ${einheit}` });
   return bins;
 }
 
-const ZIMMERGROESSE_BINS = gleichmaessigeBins(1, 30, "m²"); // 1, 2, ..., 30 m², plus "> 30 m²"
+// Sprungmasse für die SVG Grafiken | Gebäude
 
-// --------------------------------------------------------------------------------
+const GF_BINS = gleichmaessigeBins(0, 100, 14900 / 100, "m²"); // PRIO 1 | 500, 1000, ..., 10000 m², plus "> 10000 m²"
+const HNF_ANTEIL_BINS = gleichmaessigeBins(30, 5, 10, "%") // PRIO 1 | 35, 40, ..., 100 %, plus "> 100 %"
+const WOHNUNGEN_PRO_GEBAEUDE_BINS = gleichmaessigeBins(0, 1, 150, "Wohnungen") // PRIO 1
+const WOHNUNGEN_PRO_GESCHOSS_BINS = gleichmaessigeBins(0, 1, 15, "") // PRIO 1
+const GEBAEUDETIEFE_BINS = gleichmaessigeBins(0, 2, 30, "m") // PRIO 3
+const GESCHOSSIGKEIT_BINS = gleichmaessigeBins(0, 1, 10, "") // PRIO 2
+// FILTER Erschliessung (1 Spänner, 2 Spänner) // PRIO 2
 
 
-const KUECHENGROESSE_BINS = [
-  { max: 6, label: "< 6 m²" },
-  { max: 8, label: "6–8 m²" },
-  { max: 11, label: "8–11 m²" },
-  { max: 15, label: "11–15 m²" },
-  { max: Infinity, label: "> 15 m²" },
-];
+// Sprungmasse für die SVG Grafiken | Wohnungen
 
-const BALKONGROESSE_BINS = [
-  { max: 0, label: "kein Balkon" },
-  { max: 5, label: "≤ 5 m²" },
-  { max: 10, label: "5–10 m²" },
-  { max: 17, label: "10–17 m²" },
-  { max: Infinity, label: "> 17 m²" },
-];
+// FILTER Orientierung (Einseitig, Zweiseitig, Dreiseitig, Vierseitig) | PRIO 3
+// FILTER Himmelsrichtung | PRIO 3
+const WOHNUNGSGROESSE_BINS = gleichmaessigeBins(0, 5, 40, "m²") // PRIO 1
+const ZIMMER_BINS = gleichmaessigeBins(0, 0.5, 20, "Zimmer") // PRIO 1
+const ANZAHL_BADEZIMMER_BINS = gleichmaessigeBins(0, 1, 10, "Stk") // PRIO 1
+// FILTER Organisation (linear, zoniert, zentral, zirkular, peripher) // PRIO 3
+
+// Sprungmasse für die SVG Grafiken | Zimmer
+const KUECHENGROESSE_BINS = gleichmaessigeBins(0, 0.5, 40, "m²")
+const ESSZIMMERGROESSE_BINS = gleichmaessigeBins(0, 1, 20, "m²")
+const WOHNEN_SCHLAFEN_BINS = gleichmaessigeBins(0, 1, 30, "m²")
+const BALKONGROESSE_BINS = gleichmaessigeBins(0, 0.5, 40, "m²")
+const REDUITGROESSE_BINS = gleichmaessigeBins(0, 0.5, 40, "m²")
+const NASSZELLENGROESSE_BINS = gleichmaessigeBins(0, 0.5, 40, "m²")
+// FILTER Ankommen Zimmergrösse | PRIO 2
 
 function binIndexVon(wert, bins) {
   return bins.findIndex((bin) => wert <= bin.max);
 }
 
 function dimensionenAufbauen(wohnungen) {
-  const zimmerWerte = [...new Set(wohnungen.map((w) => w.zimmer))].sort((a, b) => a - b);
-  const geschossigkeitWerte = [...new Set(wohnungen.map((w) => w.geschossigkeit))].sort((a, b) => a - b);
-  const badezimmerWerte = [...new Set(wohnungen.map((w) => w.anzahlBadezimmer))].sort((a, b) => a - b);
-  const wohnungenProGeschossWerte = [...new Set(wohnungen.map((w) => w.anzahlWohnungenProGeschoss))].sort(
-    (a, b) => a - b
-  );
+  // Rohe Labels ("0100 | EG") statt Sprungmass-Bins, da Geschosse eine feste, in den Daten selbst
+  // schon durchnummerierte Kategorie sind (kein Wert dazwischen möglich) - die Zahl am Anfang sorgt
+  // dafür, dass alphabetisches Sortieren bereits die richtige Geschossreihenfolge ergibt.
+  const geschossWerte = [...new Set(wohnungen.map((w) => w.geschoss))].sort();
 
   return {
+    geschoss: {
+      keysOf: (w) => [w.geschoss],
+      keys: geschossWerte,
+      labelOf: (label) => label.split("|")[1]?.trim() ?? label,
+      colorOf: () => "var(--series-geschoss)",
+      // Geschosse haben eine natürliche unten-nach-oben-Reihenfolge wie ein Gebäudeschnitt -> Balken
+      // laufen horizontal, Kategorien von unten (erster Key) nach oben gestapelt statt links-rechts.
+      vertikaleKategorien: true,
+    },
     wohnungen: {
       keysOf: (w) => [binIndexVon(w.wohnungenProGebaeude, WOHNUNGEN_PRO_GEBAEUDE_BINS)],
       keys: WOHNUNGEN_PRO_GEBAEUDE_BINS.map((_, i) => i),
       labelOf: (i) => WOHNUNGEN_PRO_GEBAEUDE_BINS[i].label,
       colorOf: () => "var(--series-wohnungen)",
+      zaehlEinheit: "gebaeude",
     },
     zimmer: {
-      keysOf: (w) => [w.zimmer],
-      keys: zimmerWerte,
-      labelOf: (k) => String(k),
+      keysOf: (w) => [binIndexVon(w.zimmer, ZIMMER_BINS)],
+      keys: ZIMMER_BINS.map((_, i) => i),
+      labelOf: (i) => ZIMMER_BINS[i].label,
       colorOf: () => "var(--series-zimmer)",
     },
     gf: {
@@ -902,12 +940,28 @@ function dimensionenAufbauen(wohnungen) {
       keys: GF_BINS.map((_, i) => i),
       labelOf: (i) => GF_BINS[i].label,
       colorOf: () => "var(--series-gf)",
+      zaehlEinheit: "gebaeude",
+    },
+    hnfAnteil: {
+      keysOf: (w) => [binIndexVon(w.hnfAnteil, HNF_ANTEIL_BINS)],
+      keys: HNF_ANTEIL_BINS.map((_, i) => i),
+      labelOf: (i) => HNF_ANTEIL_BINS[i].label,
+      colorOf: () => "var(--series-hnf-anteil)",
+      zaehlEinheit: "gebaeude",
+    },
+    gebaeudetiefe: {
+      keysOf: (w) => [binIndexVon(w.gebaeudetiefe, GEBAEUDETIEFE_BINS)],
+      keys: GEBAEUDETIEFE_BINS.map((_, i) => i),
+      labelOf: (i) => GEBAEUDETIEFE_BINS[i].label,
+      colorOf: () => "var(--series-gebaeudetiefe)",
+      zaehlEinheit: "gebaeude",
     },
     geschossigkeit: {
-      keysOf: (w) => [w.geschossigkeit],
-      keys: geschossigkeitWerte,
-      labelOf: (k) => String(k),
+      keysOf: (w) => [binIndexVon(w.geschossigkeit, GESCHOSSIGKEIT_BINS)],
+      keys: GESCHOSSIGKEIT_BINS.map((_, i) => i),
+      labelOf: (i) => GESCHOSSIGKEIT_BINS[i].label,
       colorOf: () => "var(--series-geschossigkeit)",
+      zaehlEinheit: "gebaeude",
     },
     wohnungsgroesse: {
       keysOf: (w) => [binIndexVon(w.wohnungsgroesse, WOHNUNGSGROESSE_BINS)],
@@ -915,11 +969,17 @@ function dimensionenAufbauen(wohnungen) {
       labelOf: (i) => WOHNUNGSGROESSE_BINS[i].label,
       colorOf: () => "var(--series-wohnungsgroesse)",
     },
-    zimmergroesse: {
-      keysOf: (w) => w.zimmergroessen.map((flaeche) => binIndexVon(flaeche, ZIMMERGROESSE_BINS)),
-      keys: ZIMMERGROESSE_BINS.map((_, i) => i),
-      labelOf: (i) => ZIMMERGROESSE_BINS[i].label,
-      colorOf: () => "var(--series-zimmergroesse)",
+    wohnenSchlafenGroesse: {
+      keysOf: (w) => w.wohnenSchlafenGroessen.map((flaeche) => binIndexVon(flaeche, WOHNEN_SCHLAFEN_BINS)),
+      keys: WOHNEN_SCHLAFEN_BINS.map((_, i) => i),
+      labelOf: (i) => WOHNEN_SCHLAFEN_BINS[i].label,
+      colorOf: () => "var(--series-wohnen-schlafen-groesse)",
+    },
+    esszimmergroesse: {
+      keysOf: (w) => w.esszimmergroessen.map((flaeche) => binIndexVon(flaeche, ESSZIMMERGROESSE_BINS)),
+      keys: ESSZIMMERGROESSE_BINS.map((_, i) => i),
+      labelOf: (i) => ESSZIMMERGROESSE_BINS[i].label,
+      colorOf: () => "var(--series-esszimmergroesse)",
     },
     kuechengroesse: {
       keysOf: (w) => [binIndexVon(w.kuechengroesse, KUECHENGROESSE_BINS)],
@@ -933,17 +993,30 @@ function dimensionenAufbauen(wohnungen) {
       labelOf: (i) => BALKONGROESSE_BINS[i].label,
       colorOf: () => "var(--series-balkongroesse)",
     },
+    reduitgroesse: {
+      keysOf: (w) => [binIndexVon(w.reduitgroesse, REDUITGROESSE_BINS)],
+      keys: REDUITGROESSE_BINS.map((_, i) => i),
+      labelOf: (i) => REDUITGROESSE_BINS[i].label,
+      colorOf: () => "var(--series-reduitgroesse)",
+    },
+    nasszellengroesse: {
+      keysOf: (w) => [binIndexVon(w.nasszellengroesse, NASSZELLENGROESSE_BINS)],
+      keys: NASSZELLENGROESSE_BINS.map((_, i) => i),
+      labelOf: (i) => NASSZELLENGROESSE_BINS[i].label,
+      colorOf: () => "var(--series-nasszellengroesse)",
+    },
     anzahlBadezimmer: {
-      keysOf: (w) => [w.anzahlBadezimmer],
-      keys: badezimmerWerte,
-      labelOf: (k) => String(k),
+      keysOf: (w) => [binIndexVon(w.anzahlBadezimmer, ANZAHL_BADEZIMMER_BINS)],
+      keys: ANZAHL_BADEZIMMER_BINS.map((_, i) => i),
+      labelOf: (i) => ANZAHL_BADEZIMMER_BINS[i].label,
       colorOf: () => "var(--series-anzahl-badezimmer)",
     },
     anzahlWohnungenProGeschoss: {
-      keysOf: (w) => [w.anzahlWohnungenProGeschoss],
-      keys: wohnungenProGeschossWerte,
-      labelOf: (k) => String(k),
+      keysOf: (w) => [binIndexVon(w.anzahlWohnungenProGeschoss, WOHNUNGEN_PRO_GESCHOSS_BINS)],
+      keys: WOHNUNGEN_PRO_GESCHOSS_BINS.map((_, i) => i),
+      labelOf: (i) => WOHNUNGEN_PRO_GESCHOSS_BINS[i].label,
       colorOf: () => "var(--series-anzahl-wohnungen-pro-geschoss)",
+      zaehlEinheit: "gebaeude",
     },
   };
 }
@@ -952,14 +1025,20 @@ let DIMENSIONEN = null;
 let GESAMT_ZAEHLER = {}; // dim -> Map(key -> Anzahl, ungefiltert)
 
 const filterAuswahl = {
+  geschoss: new Set(),
   wohnungen: new Set(),
   zimmer: new Set(),
   gf: new Set(),
+  hnfAnteil: new Set(),
+  gebaeudetiefe: new Set(),
   geschossigkeit: new Set(),
   wohnungsgroesse: new Set(),
-  zimmergroesse: new Set(),
+  wohnenSchlafenGroesse: new Set(),
+  esszimmergroesse: new Set(),
   kuechengroesse: new Set(),
   balkongroesse: new Set(),
+  reduitgroesse: new Set(),
+  nasszellengroesse: new Set(),
   anzahlBadezimmer: new Set(),
   anzahlWohnungenProGeschoss: new Set(),
 };
@@ -970,14 +1049,27 @@ function wohnungPasstZuFiltern(wohnung, ausschlussDim) {
     const auswahl = filterAuswahl[dim];
     if (auswahl.size === 0) continue;
     // .some() statt .has() auf einem einzelnen Key -> Dimensionen mit mehreren Keys pro Wohnung
-    // (z.B. zimmergroesse: ein Key pro Zimmer) passen bereits, wenn irgendein Key gewählt ist.
+    // (z.B. wohnenSchlafenGroesse: ein Key pro Zimmer) passen bereits, wenn irgendein Key gewählt ist.
     if (!DIMENSIONEN[dim].keysOf(wohnung).some((k) => auswahl.has(k))) return false;
   }
   return true;
 }
 
+// Gebäude-Dimensionen (z.B. Geschossfläche, Geschossigkeit) sind pro Gebäude konstant, aber jede
+// ihrer Wohnungen trägt denselben Wert - ohne Entdoppelung würde ein Gebäude mit 10 Wohnungen 10x so
+// stark zählen wie eines mit 1 Wohnung. Deshalb wird hier pro Key die Menge der GEBÄUDE (statt der
+// Wohnungen) gezählt.
 function zaehleProDimension(dim) {
-  const { keysOf, keys } = DIMENSIONEN[dim];
+  const { keysOf, keys, zaehlEinheit } = DIMENSIONEN[dim];
+  if (zaehlEinheit === "gebaeude") {
+    const gebaeudeProKey = new Map(keys.map((k) => [k, new Set()]));
+    for (const wohnung of WOHNUNGEN) {
+      if (!wohnungPasstZuFiltern(wohnung, dim)) continue;
+      for (const k of keysOf(wohnung)) gebaeudeProKey.get(k).add(wohnung.gebaeudeId);
+    }
+    return new Map([...gebaeudeProKey].map(([k, menge]) => [k, menge.size]));
+  }
+
   const zaehler = new Map(keys.map((k) => [k, 0]));
   for (const wohnung of WOHNUNGEN) {
     if (!wohnungPasstZuFiltern(wohnung, dim)) continue;
@@ -989,7 +1081,15 @@ function zaehleProDimension(dim) {
 }
 
 function zaehleAlleUnfiltered(dim) {
-  const { keysOf, keys } = DIMENSIONEN[dim];
+  const { keysOf, keys, zaehlEinheit } = DIMENSIONEN[dim];
+  if (zaehlEinheit === "gebaeude") {
+    const gebaeudeProKey = new Map(keys.map((k) => [k, new Set()]));
+    for (const wohnung of WOHNUNGEN) {
+      for (const k of keysOf(wohnung)) gebaeudeProKey.get(k).add(wohnung.gebaeudeId);
+    }
+    return new Map([...gebaeudeProKey].map(([k, menge]) => [k, menge.size]));
+  }
+
   const zaehler = new Map(keys.map((k) => [k, 0]));
   for (const wohnung of WOHNUNGEN) {
     for (const k of keysOf(wohnung)) {
@@ -1010,9 +1110,15 @@ function matchAnzahlProGebaeudeBerechnen() {
   return { zaehlerProGebaeude, gesamt };
 }
 
-function filterKopfzeileAktualisieren(gesamt) {
+// Gesamtzahl Wohngebäude (Gebäude mit mindestens einer Wohnung), für die Kopfzeile - einmalig
+// gesetzt in filterPanelErstellen, da sie sich durch Filtern nicht ändert.
+let WOHNGEBAEUDE_ANZAHL = 0;
+
+function filterKopfzeileAktualisieren(gesamt, gebaeudeGefiltertAnzahl) {
   document.getElementById("stat-count").textContent = gesamt.toLocaleString("de-CH");
   document.getElementById("stat-total").textContent = WOHNUNGEN.length.toLocaleString("de-CH");
+  document.getElementById("stat-gebaeude-count").textContent = gebaeudeGefiltertAnzahl.toLocaleString("de-CH");
+  document.getElementById("stat-gebaeude-total").textContent = WOHNGEBAEUDE_ANZAHL.toLocaleString("de-CH");
   const irgendeinFilterAktiv = Object.values(filterAuswahl).some((s) => s.size > 0);
   document.getElementById("filter-reset").disabled = !irgendeinFilterAktiv;
   return irgendeinFilterAktiv;
@@ -1022,9 +1128,9 @@ function filterAendern() {
   for (const dim in DIMENSIONEN) diagrammRendern(dim);
 
   const { zaehlerProGebaeude, gesamt } = matchAnzahlProGebaeudeBerechnen();
-  const filterAktiv = filterKopfzeileAktualisieren(gesamt);
+  const filterAktiv = filterKopfzeileAktualisieren(gesamt, zaehlerProGebaeude.size);
 
-  gebaeudeDimmingAktualisieren(zaehlerProGebaeude);
+  gebaeudeDimmingAktualisieren(zaehlerProGebaeude, filterAuswahl.geschoss);
   gebaeudePositionenAktualisieren(zaehlerProGebaeude, filterAktiv);
 }
 
@@ -1050,7 +1156,8 @@ function filterSvgEl(tag, attrs) {
 
 const FILTER_CHART_W = 400;
 const FILTER_CHART_H = 220;
-const FILTER_PAD = { top: 10, right: 6, bottom: 26, left: 6 };
+const FILTER_PAD = { top: 5, right: 6, bottom: 50, left: 6 };
+const FILTER_PAD_VERTIKAL = { top: 4, right: 10, bottom: 4, left: 46 }; // für vertikaleKategorien-Dimensionen (z.B. Geschoss)
 
 const filterChartState = {}; // dim -> { svg, dragging, startIndex, moved }
 
@@ -1070,8 +1177,20 @@ function filterTooltipVerstecken() {
 
 function filterIndexAusEvent(dim, evt) {
   const { svg } = filterChartState[dim];
-  const { keys } = DIMENSIONEN[dim];
+  const { keys, vertikaleKategorien } = DIMENSIONEN[dim];
   const rect = svg.getBoundingClientRect();
+
+  if (vertikaleKategorien) {
+    if (rect.height === 0) return null;
+    const scaleY = FILTER_CHART_H / rect.height;
+    const localY = (evt.clientY - rect.top) * scaleY;
+    const innerH = FILTER_CHART_H - FILTER_PAD_VERTIKAL.top - FILTER_PAD_VERTIKAL.bottom;
+    const slot = innerH / keys.length;
+    let visIdx = Math.floor((localY - FILTER_PAD_VERTIKAL.top) / slot);
+    visIdx = Math.min(Math.max(visIdx, 0), keys.length - 1);
+    return keys.length - 1 - visIdx; // Key-Index 0 liegt unten, visuell aber in der letzten Zeile
+  }
+
   if (rect.width === 0) return null;
   const scaleX = FILTER_CHART_W / rect.width;
   const localX = (evt.clientX - rect.left) * scaleX;
@@ -1131,18 +1250,112 @@ function filterDiagrammInteraktionInitialisieren(dim) {
   });
 }
 
+// Für Dimensionen mit vertikaleKategorien (z.B. Geschoss): Balken wachsen horizontal nach rechts,
+// Kategorien sind von unten (Key-Index 0) nach oben gestapelt statt wie sonst links nach rechts -
+// wie ein Gebäudeschnitt statt eines klassischen Balkendiagramms.
+function vertikalesDiagrammRendern(dim, svg, keys, labelOf, colorOf, gefiltertZaehler, gesamtZaehler, maxWert) {
+  const innerW = FILTER_CHART_W - FILTER_PAD_VERTIKAL.left - FILTER_PAD_VERTIKAL.right;
+  const innerH = FILTER_CHART_H - FILTER_PAD_VERTIKAL.top - FILTER_PAD_VERTIKAL.bottom;
+  const gap = 1;
+  const barH = (innerH - gap * (keys.length - 1)) / keys.length;
+
+  for (const frac of [0.25, 0.5, 0.75]) {
+    const x = FILTER_PAD_VERTIKAL.left + innerW * frac;
+    svg.appendChild(
+      filterSvgEl("line", {
+        x1: x,
+        x2: x,
+        y1: FILTER_PAD_VERTIKAL.top,
+        y2: FILTER_PAD_VERTIKAL.top + innerH,
+        class: "gridline",
+      })
+    );
+  }
+
+  const hatAuswahl = filterAuswahl[dim].size > 0;
+
+  keys.forEach((key, i) => {
+    const gesamtWert = gesamtZaehler.get(key) || 0;
+    const gefiltertWert = gefiltertZaehler.get(key) || 0;
+    const gesamtB = (gesamtWert / maxWert) * innerW;
+    const gefiltertB = (gefiltertWert / maxWert) * innerW;
+    // Key-Index 0 soll unten liegen -> von oben gezählt ist das die letzte Zeile
+    const y = FILTER_PAD_VERTIKAL.top + (keys.length - 1 - i) * (barH + gap);
+    const istAusgewaehlt = filterAuswahl[dim].has(key);
+    const farbe = colorOf(key);
+    const gruppenOpazitaet = !hatAuswahl || istAusgewaehlt ? 1 : 0.35;
+
+    const gruppe = filterSvgEl("g", { opacity: gruppenOpazitaet, class: "bar" });
+
+    gruppe.appendChild(
+      filterSvgEl("rect", {
+        x: FILTER_PAD_VERTIKAL.left,
+        y,
+        width: Math.max(gesamtB, 1),
+        height: barH,
+        rx: 4,
+        fill: farbe,
+        "fill-opacity": "0.18",
+        stroke: istAusgewaehlt ? farbe : "var(--border)",
+        "stroke-width": istAusgewaehlt ? "2" : "1",
+        ...(istAusgewaehlt && { "stroke-opacity": "0.6" }),
+      })
+    );
+
+    if (gefiltertWert > 0) {
+      gruppe.appendChild(
+        filterSvgEl("rect", {
+          x: FILTER_PAD_VERTIKAL.left,
+          y,
+          width: Math.max(gefiltertB, 1),
+          height: barH,
+          rx: 4,
+          fill: farbe,
+        })
+      );
+    }
+
+    svg.appendChild(gruppe);
+
+    const text = filterSvgEl("text", {
+      x: FILTER_PAD_VERTIKAL.left - 6,
+      y: y + barH / 2,
+      "text-anchor": "end",
+      "dominant-baseline": "middle",
+      class: "bar-label",
+    });
+    text.textContent = labelOf(key);
+    svg.appendChild(text);
+  });
+
+  svg.appendChild(
+    filterSvgEl("line", {
+      x1: FILTER_PAD_VERTIKAL.left,
+      x2: FILTER_PAD_VERTIKAL.left,
+      y1: FILTER_PAD_VERTIKAL.top,
+      y2: FILTER_PAD_VERTIKAL.top + innerH,
+      class: "baseline",
+    })
+  );
+}
+
 function diagrammRendern(dim) {
   const { svg } = filterChartState[dim];
   svg.innerHTML = "";
 
-  const { keys, labelOf, colorOf } = DIMENSIONEN[dim];
+  const { keys, labelOf, colorOf, vertikaleKategorien } = DIMENSIONEN[dim];
   const gefiltertZaehler = zaehleProDimension(dim);
   const gesamtZaehler = GESAMT_ZAEHLER[dim];
   const maxWert = Math.max(1, ...keys.map((k) => gesamtZaehler.get(k) || 0));
 
+  if (vertikaleKategorien) {
+    vertikalesDiagrammRendern(dim, svg, keys, labelOf, colorOf, gefiltertZaehler, gesamtZaehler, maxWert);
+    return;
+  }
+
   const innerW = FILTER_CHART_W - FILTER_PAD.left - FILTER_PAD.right;
   const innerH = FILTER_CHART_H - FILTER_PAD.top - FILTER_PAD.bottom;
-  const gap = 6;
+  const gap = 1; // Balkenabstand
   const barW = (innerW - gap * (keys.length - 1)) / keys.length;
 
   for (const frac of [0.25, 0.5, 0.75]) {
@@ -1221,6 +1434,8 @@ function diagrammRendern(dim) {
 }
 
 function filterPanelErstellen() {
+  WOHNGEBAEUDE_ANZAHL = new Set(WOHNUNGEN.map((w) => w.gebaeudeId)).size;
+
   DIMENSIONEN = dimensionenAufbauen(WOHNUNGEN);
   GESAMT_ZAEHLER = {};
   for (const dim in DIMENSIONEN) GESAMT_ZAEHLER[dim] = zaehleAlleUnfiltered(dim);
