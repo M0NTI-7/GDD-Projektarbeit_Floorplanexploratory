@@ -4,19 +4,26 @@
 <head>
   <meta charset="utf-8">
   <title>Grundriss Darstellung</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Jost:wght@300;400;500;600&display=swap" rel="stylesheet">
   <style>
     html,
     body {
       margin: 0;
       height: 100%;
       overflow: hidden;
-      background: #e5e5e5;
+      background: #F0EDE4;
+      font-family: 'Jost', sans-serif;
+      color: #2C2A25;
     }
 
     /* Papier-Hintergrund liegt jetzt auf der Seite, da der Canvas transparent ist */
     canvas {
       display: block;
-      position: relative;
+      position: fixed;
+      top: 0;
+      left: var(--linker-rand);
       z-index: 1;
     }
 
@@ -25,13 +32,41 @@
       position: fixed;
       z-index: 10;
       background: #ffffff;
-      border: 1px solid #000000;
+      border: 1px solid #2C2A25;
+      border-radius: 6px;
       padding: 8px 12px;
-      font-family: sans-serif;
+      font-family: 'Jost', sans-serif;
       font-size: 13px;
       line-height: 1.5;
       pointer-events: none;
       /* Klicks sollen "durch" die Box zur Szene durchgehen */
+    }
+
+    /* Titel + Leadtext oben links, schwebt über der Szene */
+
+    #intro {
+      position: fixed;
+      top: 0;
+      left: 0;
+      z-index: 15;
+      max-width: 380px;
+      padding: 28px 32px;
+      pointer-events: none;
+      /* Klicks gehen durch zur Szene, wie bei #infobox */
+    }
+
+    #intro h1 {
+      margin: 0 0 8px;
+      font-size: 22px;
+      font-weight: 600;
+      color: #2C2A25;
+    }
+
+    #intro p {
+      margin: 0;
+      font-size: 13px;
+      line-height: 1.6;
+      color: #5C584F;
     }
 
     /* Ein .gebaeude-overlay pro Gebäude wird per JS auf die projizierte Bildschirmposition der
@@ -82,9 +117,9 @@
       display: flex;
       align-items: center;
       gap: 4px;
-      font-family: sans-serif;
+      font-family: 'Jost', sans-serif;
       font-size: 12px;
-      color: #000000;
+      color: #2C2A25;
       white-space: nowrap;
     }
 
@@ -103,7 +138,11 @@
     }
 
     :root {
-      --border: #d8d8d8;
+      /* Fixer Platz links für Titel + Filter (siehe #intro, .filter-panel) - main.js liest diesen
+         Wert aus, um die Zeichnung genau daneben zu platzieren. Oben/unten/rechts bewusst kein Rand:
+         die Zeichnung geht dort bis an den Fensterrand. */
+      --linker-rand: 440px;
+      --border: #cfc8b8;
       --series-geschoss: #b8860b;
       --series-wohnungen: #34495e;
       --series-zimmer: #8e44ad;
@@ -122,28 +161,31 @@
       --series-anzahl-wohnungen-pro-geschoss: #7f8c8d;
     }
 
+    /* Unten links schwebende Karte statt volle Sidebar rechts, damit oben links Platz für #intro
+       bleibt - .filter-body ist der ein-/ausklappbare Teil, der Header (Zähler + Buttons) bleibt
+       immer sichtbar. */
+
     .filter-panel {
       position: fixed;
       z-index: 20;
       /* über Canvas (1) und Gebäude-Overlays (0) */
-      top: 0;
-      right: 0;
-      width: 280px;
-      height: 100%;
-      overflow-y: auto;
+      left: 16px;
+      bottom: 16px;
+      width: 300px;
+      max-width: calc(100vw - 32px);
       box-sizing: border-box;
       padding: 16px;
-      background: #ffffff;
-      border-left: 1px solid var(--border);
-      font-family: sans-serif;
-      color: #000000;
+      background: #E2DDD2;
+      border-radius: 12px;
+      box-shadow: 0 2px 10px rgba(44, 42, 37, 0.15);
+      font-family: 'Jost', sans-serif;
+      color: #2C2A25;
     }
 
     .filter-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      margin-bottom: 16px;
       font-size: 13px;
     }
 
@@ -153,18 +195,48 @@
       gap: 2px;
     }
 
-    .filter-header button {
+    .filter-header button,
+    .filter-toggle {
       font: inherit;
-      padding: 4px 10px;
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      background: #ffffff;
+      font-weight: 600;
+      padding: 8px 14px;
+      border: none;
+      border-radius: 8px;
+      background: #5C584F;
+      color: #F0EDE4;
       cursor: pointer;
+      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    .filter-header button:hover,
+    .filter-toggle:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
     }
 
     .filter-header button:disabled {
       opacity: 0.4;
       cursor: default;
+      transform: none;
+      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+    }
+
+    .filter-toggle {
+      display: block;
+      width: 100%;
+      margin-top: 12px;
+      text-align: center;
+    }
+
+    .filter-body {
+      max-height: 60vh;
+      overflow-y: auto;
+      margin-top: 12px;
+    }
+
+    .filter-panel.eingeklappt .filter-body {
+      display: none;
     }
 
     .filter-group {
@@ -189,7 +261,7 @@
       content: "▸";
       display: inline-block;
       width: 1em;
-      color: #888888;
+      color: #9C9888;
     }
 
     .filter-group[open] summary::before {
@@ -202,7 +274,7 @@
       font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.03em;
-      color: #888888;
+      color: #9C9888;
     }
 
     .chart-card {
@@ -231,22 +303,23 @@
     }
 
     .chart-svg .baseline {
-      stroke: #000000;
+      stroke: #2C2A25;
       stroke-width: 1;
     }
 
     .chart-svg .bar-label {
       font-size: 9px;
-      fill: #555555;
+      fill: #5C584F;
     }
 
     .filter-tooltip {
       position: fixed;
       z-index: 30;
       background: #ffffff;
-      border: 1px solid #000000;
+      border: 1px solid #2C2A25;
+      border-radius: 6px;
       padding: 6px 10px;
-      font-family: sans-serif;
+      font-family: 'Jost', sans-serif;
       font-size: 12px;
       line-height: 1.4;
       pointer-events: none;
@@ -259,6 +332,15 @@
 
   <div id="infobox"></div>
 
+  <div id="intro">
+    <h1>Grundriss Darstellung</h1>
+    <p>
+      Vergleichende Übersicht von Grundrissen Zürcher Wohnbaugenossenschaften, basierend auf
+      «Wohngenossenschaften in Zürich. Gartenstädte und neue Nachbarschaften» (Dominique Boudet, Hg.).
+    </p>
+    <!-- Platzhaltertext - bitte nach Bedarf anpassen -->
+  </div>
+
   <aside class="filter-panel">
     <div class="filter-header">
       <div class="filter-stats">
@@ -267,6 +349,10 @@
       </div>
       <button id="filter-reset" disabled>Zurücksetzen</button>
     </div>
+
+    <button id="filter-toggle" class="filter-toggle" type="button" aria-expanded="true">Filter ausblenden</button>
+
+    <div class="filter-body">
 
     <details class="filter-group" open>
       <summary>Geschoss</summary>
@@ -369,6 +455,8 @@
         <svg class="chart-svg" viewBox="0 0 400 220"></svg>
       </div>
     </details>
+
+    </div>
   </aside>
 
   <div id="filter-tooltip" class="filter-tooltip" hidden>

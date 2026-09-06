@@ -48,9 +48,29 @@ const scene = new THREE.Scene();
 // Kein scene.background -> Canvas bleibt transparent, der weisse "Papier"-Hintergrund kommt jetzt
 // von der Seite (siehe index.html), damit die Donut-Overlays dahinter sichtbar durchscheinen können.
 
+// Links ist per CSS (--linker-rand, siehe index.html) fest Platz für Titel + Filter reserviert; die
+// Zeichnung selbst beginnt erst danach (kein Rand oben/unten/rechts). Einzige Quelle für diesen Wert
+// ist die CSS-Variable, damit er nicht an zwei Stellen gepflegt werden muss.
+const linkerRandPx = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--linker-rand")) || 0;
+
+function zeichenBreite() {
+  return window.innerWidth - linkerRandPx;
+}
+
 let frustumSize = 50;
 
-const aspect = window.innerWidth / window.innerHeight;
+// Ab welcher Zoomstufe Raum/Öffnung/Ausstattung dazukommen (Geschossfläche ist immer sichtbar) -
+// als sichtbare Höhe der Szene in Metern (frustumSize / camera.zoom). Einfach anpassen, falls sich
+// 50m beim Testen als zu früh/spät herausstellt.
+const DETAIL_SCHWELLE_METER = 400;
+let detailSichtbar = false;
+
+// Nur dieses Geschoss wird als Geschossfläche gezeigt, solange kein eigener Geschoss-Filter aktiv
+// ist (siehe linienSichtbarkeitAnwenden) - Gebäude ohne dieses Geschoss (z.B. eingeschossige Bauten)
+// zeigen dadurch anfangs bewusst nichts, bis reingezoomt oder ein anderes Geschoss gefiltert wird.
+const STARTGESCHOSS_LABEL = "0101 | 01 OG";
+
+const aspect = zeichenBreite() / window.innerHeight;
 const camera = new THREE.OrthographicCamera(
   (-frustumSize * aspect) / 2,
   (frustumSize * aspect) / 2,
@@ -73,7 +93,7 @@ function kameraFrustumAktualisieren(aspect) {
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true }); // alpha: Canvas-Hintergrund transparent statt opak
 renderer.setClearColor(0x000000, 0); // alpha:true allein reicht nicht, sonst clear'd Three.js weiterhin opak (Standard: Schwarz, Alpha 1)
-renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setSize(zeichenBreite(), window.innerHeight);
 renderer.setPixelRatio(window.devicePixelRatio); // greift die Pixel des Bildschirms ab für die schärfe
 document.body.appendChild(renderer.domElement); // braucht es damit überhaupt etwas darstellt
 
@@ -96,16 +116,28 @@ controls.mouseButtons = {
 // Verhalten: Past die Zeichnung der Fenstergrösse an falls diese geändert wird
 
 window.addEventListener("resize", () => {
-  const aspect = window.innerWidth / window.innerHeight;
+  const aspect = zeichenBreite() / window.innerHeight;
   kameraFrustumAktualisieren(aspect);
 
-  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setSize(zeichenBreite(), window.innerHeight);
   for (const material of Object.values(stiftfarbeUmfassungslinie)) {
     renderer.getSize(material.resolution);
   }
   for (const material of gebaeudeLinienMaterialien) {
     renderer.getSize(material.resolution);
   }
+});
+
+// Verhalten: Der "Filter ausblenden/anzeigen"-Button klappt die Diagramme im Filter-Panel ein/aus
+// (siehe .filter-panel.eingeklappt in index.html), der Header mit den Zählern bleibt sichtbar.
+
+const filterPanelElement = document.querySelector(".filter-panel");
+const filterToggleButton = document.getElementById("filter-toggle");
+
+filterToggleButton.addEventListener("click", () => {
+  const eingeklappt = filterPanelElement.classList.toggle("eingeklappt");
+  filterToggleButton.textContent = eingeklappt ? "Filter anzeigen" : "Filter ausblenden";
+  filterToggleButton.setAttribute("aria-expanded", String(!eingeklappt));
 });
 
 // Verhalten: Hier wird pro Gebäude eine HTML-Overlay-Gruppe (Donut + Zimmer-Legende) auf die
@@ -143,14 +175,34 @@ function gebaeudeOverlaysAktualisieren() {
 
   for (const { position, element } of gebaeudeOverlays) {
     const projiziert = position.clone().project(camera);
-    element.style.left = `${((projiziert.x + 1) / 2) * window.innerWidth}px`;
+    // linkerRandPx dazuzählen: die NDC-Koordinaten (-1 bis 1) beziehen sich auf die Zeichenfläche,
+    // die Overlays sind aber fixed im ganzen Fenster positioniert (siehe .gebaeude-overlay in index.html).
+    element.style.left = `${linkerRandPx + ((projiziert.x + 1) / 2) * zeichenBreite()}px`;
     element.style.top = `${((1 - projiziert.y) / 2) * window.innerHeight}px`;
     element.style.transform = `scale(${massstab})`;
   }
 }
 
+// Verhalten: Reagiert auf die aktuelle Zoomstufe (sichtbare Höhe der Szene in Metern) und blendet
+// Raum/Öffnung/Ausstattung erst ab DETAIL_SCHWELLE_METER ein - siehe linienSichtbarkeitAnwenden.
+// Rechnet nur bei einer tatsächlichen Änderung neu (nicht bei jedem Frame), analog zu
+// letztePackSignatur beim Neu-Packen.
+function detailSichtbarkeitAktualisieren(erzwingen = false) {
+  const sichtbareHoeheMeter = frustumSize / camera.zoom;
+  const neuDetailSichtbar = sichtbareHoeheMeter <= DETAIL_SCHWELLE_METER;
+  if (!erzwingen && neuDetailSichtbar === detailSichtbar) return;
+
+  detailSichtbar = neuDetailSichtbar;
+  for (const gebaeude of gebaeudeNachId.values()) {
+    for (const gruppe of gebaeude.linienMaterialien) {
+      linienSichtbarkeitAnwenden(gruppe);
+    }
+  }
+}
+
 renderer.setAnimationLoop(() => {
   controls.update();
+  detailSichtbarkeitAktualisieren();
   gebaeudeOverlaysAktualisieren();
   renderer.render(scene, camera);
 });
@@ -216,6 +268,75 @@ function segmenteHinzufuegen(zielArray, kontur) {
     const [x1, y1] = kontur[i + 1];
     zielArray.push(x0, 0, y0, x1, 0, y1); // die beiden 0 sind die Höhe
   }
+}
+
+// Ein Material für alle Schwarzplan-Füllungen (siehe schwarzplanFuellungErstellen) - keine Beleuchtung
+// in der Szene, deshalb MeshBasicMaterial statt eines lichtabhängigen Materials. side:DoubleSide,
+// da die Umlaufrichtung der WKT-Konturen nicht garantiert ist - je nachdem würde sonst durch die
+// 90°-Drehung (siehe unten) die von der Kamera abgewandte Seite gerendert und die Füllung wäre
+// unsichtbar statt schwarz.
+const schwarzplanMaterial = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.DoubleSide });
+
+// Ray-Casting-Test: liegt punkt innerhalb von kontur? Damit lässt sich unterscheiden, ob eine
+// zusätzliche Kontur ein Loch (liegt innerhalb einer grösseren Aussenkontur) oder ein eigenständiges,
+// getrenntes Flächenstück ist (liegt ausserhalb) - siehe schwarzplanFuellungErstellen.
+function punktInKontur([px, py], kontur) {
+  let innen = false;
+  for (let i = 0, j = kontur.length - 1; i < kontur.length; j = i++) {
+    const [xi, yi] = kontur[i];
+    const [xj, yj] = kontur[j];
+    const schneidet = yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi;
+    if (schneidet) innen = !innen;
+  }
+  return innen;
+}
+
+// Ziel: Aus den Geschossfläche-Zeilen eines Geschosses eine gefüllte (schwarze) Fläche statt nur
+// Umrisslinien bauen, für den Schwarzplan-Look solange nicht reingezoomt ist (siehe
+// linienSichtbarkeitAnwenden). Eine Zeile kann mehrere Konturen haben - nicht einfach "erste =
+// Aussenkontur, Rest = Löcher" annehmen: bei einer Geometrie mit mehreren GETRENNTEN Flächenstücken
+// (z.B. zwei Gebäudeflügel auf demselben Geschoss) wäre das falsch, das zweite Stück würde
+// fälschlich als Loch vom ersten abgezogen statt selbst gefüllt zu werden. Stattdessen nach Fläche
+// absteigend sortiert und jede kleinere Kontur nur dann als Loch behandelt, wenn sie tatsächlich
+// innerhalb einer bereits erkannten Aussenkontur liegt (Innenhof), sonst als eigene Aussenkontur.
+function schwarzplanFuellungErstellen(rohZeilen) {
+  const meshes = [];
+
+  for (const zeile of rohZeilen) {
+    if (zeile.konturen.length === 0) continue;
+
+    const nachFlaecheAbsteigend = zeile.konturen
+      .slice()
+      .sort((a, b) => Math.abs(flaecheAusKontur(b)) - Math.abs(flaecheAusKontur(a)));
+
+    const aussenKonturen = []; // { shape, kontur } - kontur hier für den punktInKontur-Test der nächsten Runde
+    for (const kontur of nachFlaecheAbsteigend) {
+      const passendeAussenkontur = aussenKonturen.find((a) => punktInKontur(kontur[0], a.kontur));
+      if (passendeAussenkontur) {
+        passendeAussenkontur.shape.holes.push(new THREE.Path(kontur.map(([x, y]) => new THREE.Vector2(x, y))));
+      } else {
+        const shape = new THREE.Shape(kontur.map(([x, y]) => new THREE.Vector2(x, y)));
+        aussenKonturen.push({ shape, kontur });
+      }
+    }
+
+    for (const { shape } of aussenKonturen) {
+      const geometrie = new THREE.ShapeGeometry(shape);
+      const mesh = new THREE.Mesh(geometrie, schwarzplanMaterial);
+      // ShapeGeometry liegt lokal in der XY-Ebene (z=0) - +90° um X dreht (x,y,0) nach (x,0,y), also
+      // in dieselbe XZ-Ebene wie die Umfassungslinien (siehe segmenteHinzufuegen).
+      mesh.rotation.x = Math.PI / 2;
+      mesh.position.y = -0.05; // knapp unter den Linien, damit diese immer sichtbar obenauf bleiben
+      meshes.push(mesh);
+    }
+  }
+
+  if (meshes.length === 0) return null;
+  if (meshes.length === 1) return meshes[0];
+
+  const gruppe = new THREE.Group();
+  gruppe.add(...meshes);
+  return gruppe;
 }
 
 function gebaeudeDarstellen(zeilen) {
@@ -373,11 +494,13 @@ function gebaeudeDarstellen(zeilen) {
         geschossGruppen[schluessel] = {
           positionen: [],
           zeilen: [],
+          rohZeilen: [], // eine pro Zeile statt pro Segment - für die Schwarzplan-Füllung (Geschossfläche)
           entitaetTyp: zeile.entitaet_typ,
           geschossLabel: zeile.geschoss_label,
         };
       }
       const gruppe = geschossGruppen[schluessel];
+      gruppe.rohZeilen.push(zeile);
 
       for (const kontur of zeile.konturen) {
         segmenteHinzufuegen(gruppe.positionen, kontur);
@@ -388,7 +511,7 @@ function gebaeudeDarstellen(zeilen) {
       }
     }
 
-    gebaeude.linienMaterialien = []; // { material, geschossLabel }
+    gebaeude.linienMaterialien = []; // { material, linien, fuellung, geschossLabel, entitaetTyp, gefiltertSichtbar }
     gebaeude.linienObjekte = []; // für gebaeudePositionSetzen (Neu-Packen beim Filtern)
 
     for (const gruppe of Object.values(geschossGruppen)) {
@@ -396,7 +519,6 @@ function gebaeudeDarstellen(zeilen) {
       material.transparent = true; // ermöglicht opacity 0 zum Ausblenden, siehe gebaeudeDimmingAktualisieren
       renderer.getSize(material.resolution);
       gebaeudeLinienMaterialien.push(material);
-      gebaeude.linienMaterialien.push({ material, geschossLabel: gruppe.geschossLabel });
 
       const geometrie = new LineSegmentsGeometry();
       geometrie.setPositions(gruppe.positionen);
@@ -404,14 +526,43 @@ function gebaeudeDarstellen(zeilen) {
       const linien = new LineSegments2(geometrie, material);
       linien.computeLineDistances();
       linien.userData.zeilen = gruppe.zeilen; // für die Infobox: Zeile pro Segment-Index
+      // Anfangs nur Geschossfläche des Startgeschosses sichtbar (siehe linienSichtbarkeitAnwenden) -
+      // alles andere ist zwar schon aufgebaut (damit es beim Reinzoomen/Filtern sofort da ist), aber
+      // ausgeblendet. Wird direkt nach dem Laden ohnehin von detailSichtbarkeitAktualisieren(true)
+      // nochmals korrekt gesetzt, hier nur ein sinnvoller Startwert.
+      linien.visible = gruppe.entitaetTyp === "Geschossfläche" && gruppe.geschossLabel === STARTGESCHOSS_LABEL;
       scene.add(linien);
       klickbareObjekte.push(linien);
       gebaeude.linienObjekte.push(linien);
+
+      // Schwarzplan-Füllung nur für Geschossfläche - Mesh statt Linien, siehe schwarzplanFuellungErstellen.
+      let fuellung = null;
+      if (gruppe.entitaetTyp === "Geschossfläche") {
+        fuellung = schwarzplanFuellungErstellen(gruppe.rohZeilen);
+        if (fuellung) {
+          fuellung.visible = linien.visible; // gleicher Startwert, wird ebenfalls gleich danach korrigiert
+          scene.add(fuellung);
+          gebaeude.linienObjekte.push(fuellung); // damit gebaeudePositionSetzen sie beim Neu-Packen mitverschiebt
+        }
+      }
+
+      gebaeude.linienMaterialien.push({
+        material,
+        linien,
+        fuellung,
+        geschossLabel: gruppe.geschossLabel,
+        entitaetTyp: gruppe.entitaetTyp,
+        gefiltertSichtbar: true, // von gebaeudeDimmingAktualisieren aktuell gehalten, initial nichts gefiltert
+      });
     }
   }
 
   annotationenErstellen(gebaeudeListe);
   kameraAufGebaeudeZentrieren(gebaeudeListe);
+  // erzwingen:true, weil frustumSize gerade erst durch kameraAufGebaeudeZentrieren den echten Wert
+  // für diesen Datensatz bekommen hat - ohne das könnte der Vergleich mit dem alten Vorgabewert
+  // zufällig gleich ausfallen und Raum/Öffnung/Ausstattung blieben fälschlich ausgeblendet.
+  detailSichtbarkeitAktualisieren(true);
   filterPanelErstellen();
 }
 
@@ -433,10 +584,10 @@ function packPositionenBerechnen(gebaeudeUnterliste) {
   );
   // Packfläche grosszügiger als die reine Summe wählen, sonst braucht der Zufalls-Algorithmus
   // zu viele Versuche bzw. findet für die letzten Gebäude keinen Platz mehr.
-  // Das Seitenverhältnis der Packfläche folgt dem Fenster, damit die Anordnung wie im
-  // sketch.js-Original der Canvas-/Fenstergrösse entspricht statt quadratisch zu sein.
-  const fensterAspect = window.innerWidth / window.innerHeight;
-  const packHoehe = Math.sqrt(gesamtFlaeche / (0.4 * fensterAspect)); // 0.4 bedeutet 40% der Bildschirmfläche wird mit Gebäude dargestellt ?? evt. später mit einem Regler steuern
+  // Das Seitenverhältnis der Packfläche folgt der tatsächlichen Zeichenfläche (ohne linken Rand),
+  // damit die Anordnung dem sichtbaren Ausschnitt entspricht statt quadratisch zu sein.
+  const fensterAspect = zeichenBreite() / window.innerHeight;
+  const packHoehe = Math.sqrt(gesamtFlaeche / (0.3 * fensterAspect)); // 0.3 bedeutet 30% der Bildschirmfläche wird mit Gebäude dargestellt ?? evt. später mit einem Regler steuern
   const packBreite = packHoehe * fensterAspect;
 
   const platzierteBoxen = []; // { x, y, w, h } in Packflächen-Koordinaten (x/y = obere linke Ecke)
@@ -560,12 +711,13 @@ function kameraAufGebaeudeZentrieren(gebaeudeListe) {
   const zentrumX = (minX + maxX) / 2;
   const zentrumZ = (minZ + maxZ) / 2;
 
-  const aktuellesAspect = window.innerWidth / window.innerHeight;
-  const randFaktor = 1.1; // 10% Rand
-  frustumSize = Math.max(
-    (maxZ - minZ) * randFaktor,
-    ((maxX - minX) * randFaktor) / aktuellesAspect
-  );
+  const aktuellesAspect = zeichenBreite() / window.innerHeight;
+  // Kein künstlicher Rand mehr (kein randFaktor) - die Zeichnung soll oben/unten/rechts direkt an die
+  // Kante gehen. Math.max wählt trotzdem die Achse mit dem grösseren Platzbedarf, sonst würde die
+  // andere Achse abgeschnitten - stimmt das Seitenverhältnis von Anordnung und Zeichenfläche nicht
+  // exakt überein, bleibt auf GENAU EINEM Achsenpaar (oben+unten ODER links+rechts) unvermeidbar ein
+  // kleiner Rand übrig, das ist reine Geometrie (Seitenverhältnis passt selten exakt), kein Setting.
+  frustumSize = Math.max(maxZ - minZ, (maxX - minX) / aktuellesAspect);
   camera.zoom = 1; // sauberer "zoom to fit" statt mit dem zuletzt vom Nutzer gewählten Zoom zu skalieren
   kameraFrustumAktualisieren(aktuellesAspect);
   camera.position.set(zentrumX, 100, zentrumZ);
@@ -669,9 +821,12 @@ raycaster.params.Line2 = { threshold: 8 }; // die Zahl ist die Tolleranz wie gen
 const infobox = document.getElementById("infobox");
 
 renderer.domElement.addEventListener("click", (e) => {
+  // Koordinaten relativ zur tatsächlichen Canvas-Position/-Grösse statt zum ganzen Fenster, da die
+  // Zeichnung seit dem linken Rand (siehe zeichenBreite) nicht mehr bei Fenster-x=0 beginnt.
+  const rect = renderer.domElement.getBoundingClientRect();
   const maus = new THREE.Vector2(
-    (e.clientX / window.innerWidth) * 2 - 1,
-    -(e.clientY / window.innerHeight) * 2 + 1
+    ((e.clientX - rect.left) / rect.width) * 2 - 1,
+    -((e.clientY - rect.top) / rect.height) * 2 + 1
   );
 
   raycaster.setFromCamera(maus, camera);
@@ -725,12 +880,45 @@ function flaecheAusKonturen(konturen) {
 
 // --------------------------------------------------------------------------------
 
-// Ziel: Gebäude ohne zum Filter passende Wohnung sind ausgeblendet, indem die Materialien ihrer
-// eigenen Linien (siehe gebaeude.linienMaterialien) auf opacity 0 gesetzt werden. Zusätzlich blendet
-// ein aktiver Geschoss-Filter innerhalb jedes (weiterhin sichtbaren) Gebäudes alle nicht ausgewählten
-// Geschosse aus, da jedes Geschoss dank der Gruppierung in gebaeudeDarstellen sein eigenes Material hat.
+// Ziel: Gebäude ohne zum Filter passende Wohnung sind ausgeblendet, indem ihre Linienobjekte auf
+// visible=false gesetzt werden (nicht nur opacity 0 - siehe gebaeude.linienMaterialien). Zusätzlich
+// blendet ein aktiver Geschoss-Filter innerhalb jedes (weiterhin sichtbaren) Gebäudes alle nicht
+// ausgewählten Geschosse aus, da jedes Geschoss dank der Gruppierung in gebaeudeDarstellen sein
+// eigenes Material/Objekt hat.
+//
+// visible=false ist hier wichtig, nicht nur opacity=0: alle Linien liegen exakt auf derselben Höhe
+// (y=0, siehe segmenteHinzufuegen) und sind transparent:true (nötig für die Opacity-Blendung). Beim
+// Neu-Packen der gefilterten Teilmenge (gebaeudePositionenAktualisieren) landen ausgeblendete
+// Gebäude oft dort, wo jetzt sichtbare Gebäude neu platziert werden - bei nur opacity=0 bleiben sie
+// aber weiterhin gerendert und interferieren als koplanare transparente Geometrie am selben Ort mit
+// den sichtbaren Linien (sichtbare Schnitte/Lücken). Mit visible=false werden sie komplett vom
+// Rendering ausgeschlossen und können nicht mehr stören.
+//
+// Ob eine Gruppe am Ende WIRKLICH sichtbar ist, hängt von zwei unabhängigen Gründen ab: dem Filter
+// (gefiltertSichtbar, hier gesetzt) und der aktuellen Zoomstufe (detailSichtbar, siehe
+// detailSichtbarkeitAktualisieren) - deshalb setzt diese Funktion nicht direkt linien.visible,
+// sondern lässt linienSichtbarkeitAnwenden() beide Gründe kombinieren.
+function linienSichtbarkeitAnwenden(gruppe) {
+  if (gruppe.entitaetTyp !== "Geschossfläche") {
+    // Raum/Öffnung/Ausstattung: unverändert nur abhängig von Filter + Zoomstufe, alle Geschosse gleich.
+    gruppe.linien.visible = gruppe.gefiltertSichtbar && detailSichtbar;
+    return;
+  }
 
-// --------------------------------------------------------------------------------
+  // Geschossfläche: ohne aktiven Geschoss-Filter nur STARTGESCHOSS_LABEL zeigen (andere Geschosse
+  // bleiben leer, bis reingezoomt wird). Ist ein Geschoss-Filter aktiv, übernimmt stattdessen
+  // gefiltertSichtbar (siehe gebaeudeDimmingAktualisieren) die Auswahl - der Nutzer sieht dann genau
+  // die gefilterten Geschosse, nicht zwingend das Startgeschoss.
+  const geschossFilterAktiv = filterAuswahl.geschoss.size > 0;
+  const geschossBasisSichtbar = geschossFilterAktiv || gruppe.geschossLabel === STARTGESCHOSS_LABEL;
+  gruppe.linien.visible = gruppe.gefiltertSichtbar && (geschossBasisSichtbar || detailSichtbar);
+
+  // Schwarzplan-Füllung: wie die Geschossfläche-Linie selbst, aber nur solange NICHT reingezoomt ist -
+  // sobald die Detailschwelle erreicht ist, verschwindet die Füllung wieder.
+  if (gruppe.fuellung) {
+    gruppe.fuellung.visible = gruppe.gefiltertSichtbar && geschossBasisSichtbar && !detailSichtbar;
+  }
+}
 
 function gebaeudeDimmingAktualisieren(matchAnzahlProGebaeude, ausgewaehlteGeschosse) {
   const geschossFilterAktiv = ausgewaehlteGeschosse.size > 0;
@@ -739,9 +927,12 @@ function gebaeudeDimmingAktualisieren(matchAnzahlProGebaeude, ausgewaehlteGescho
     // kein Wohngebäude -> nie wegen Wohnungs-Filtern ausblenden, Geschoss-Filter gilt aber trotzdem
     const dimmenGebaeude = gebaeude.wohnungenAnzahl === 0 ? false : !(matchAnzahlProGebaeude.get(gebaeude_id) > 0);
 
-    for (const { material, geschossLabel } of gebaeude.linienMaterialien) {
-      const dimmenGeschoss = geschossFilterAktiv && !ausgewaehlteGeschosse.has(geschossLabel);
-      material.opacity = dimmenGebaeude || dimmenGeschoss ? 0 : 1;
+    for (const gruppe of gebaeude.linienMaterialien) {
+      const dimmenGeschoss = geschossFilterAktiv && !ausgewaehlteGeschosse.has(gruppe.geschossLabel);
+      const dimmen = dimmenGebaeude || dimmenGeschoss;
+      gruppe.material.opacity = dimmen ? 0 : 1;
+      gruppe.gefiltertSichtbar = !dimmen;
+      linienSichtbarkeitAnwenden(gruppe);
     }
 
     if (gebaeude.wohnungenAnzahl > 0) {
