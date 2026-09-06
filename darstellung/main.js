@@ -122,11 +122,11 @@ function gebaeudeOverlayErstellen(mitteX, mitteZ, flaechePro416Kategorie, zimmer
   const element = document.createElement("div");
   element.className = "gebaeude-overlay";
 
-  const donut = donutErstellen(flaechePro416Kategorie);
-  if (donut) element.appendChild(donut);
+  // const donut = donutErstellen(flaechePro416Kategorie);
+  // if (donut) element.appendChild(donut);
 
-  const legende = zimmerLegendeErstellen(zimmerProWohnung);
-  if (legende) element.appendChild(legende);
+  // const legende = zimmerLegendeErstellen(zimmerProWohnung);
+  // if (legende) element.appendChild(legende);
 
   document.body.appendChild(element);
   const position = new THREE.Vector3(mitteX, 0, mitteZ);
@@ -161,18 +161,35 @@ renderer.setAnimationLoop(() => {
 
 // --------------------------------------------------------------------------------
 
-const csvPfad = "../data-prep/geometries_erste20.csv";
+//const csvPfad = "../data-prep/geometries_erste100.csv"; // für zum Testen
+const csvPfad = "../data-prep/geometries_final_angereichert.csv";
 
-Papa.parse(csvPfad, {
-  download: true,
-  header: true,
-  dynamicTyping: true,
-  skipEmptyLines: true,
-  complete: (ergebnis) => {
-    const gebaeudeDaten = ergebnis.data;
-    gebaeudeDarstellen(gebaeudeDaten);
-  },
-});
+// dynamicTyping:true würde Papaparse dazu bringen, bei JEDER Zelle eine Zahlen-Erkennung
+// laufen zu lassen - auch auf der sehr langen "koordinaten"-Spalte (WKT-Polygon-Strings).
+// Stattdessen werden hier gezielt nur die beiden tatsächlich numerisch gebrauchten Spalten
+// umgewandelt.
+const NUMERISCHE_SPALTEN = new Set(["flaeche", "zimmer_zaehler"]);
+
+// Papa.parse(url, {download:true}) lädt und dekodiert die Antwort intern als EINEN einzigen
+// String. Bei einer Datei dieser Grösse (500+ MB) schlägt das fehl (liefert leere Daten statt
+// eines Fehlers) statt eines klaren Fehlers. Deshalb wird die Datei hier selbst als Blob geladen
+// (funktioniert zuverlässig) und Papaparse liest den Blob dann in 5-MB-Stücken - dieselbe Menge
+// Daten, aber nie mehr als ein Stück gleichzeitig im Speicher.
+fetch(csvPfad)
+  .then((antwort) => antwort.blob())
+  .then((blob) => {
+    const gebaeudeDaten = [];
+    Papa.parse(blob, {
+      header: true,
+      skipEmptyLines: true,
+      chunkSize: 5 * 1024 * 1024,
+      transform: (wert, spalte) => (NUMERISCHE_SPALTEN.has(spalte) ? (wert === "" ? 0 : Number(wert)) : wert),
+      chunk: (ergebnis) => {
+        for (const zeile of ergebnis.data) gebaeudeDaten.push(zeile);
+      },
+      complete: () => gebaeudeDarstellen(gebaeudeDaten),
+    });
+  });
 
 // --------------------------------------------------------------------------------
 
@@ -898,9 +915,6 @@ function dimensionenAufbauen(wohnungen) {
       labelOf: (i) => WOHNUNGSGROESSE_BINS[i].label,
       colorOf: () => "var(--series-wohnungsgroesse)",
     },
-    // Jedes Zimmer einzeln (statt zu einer Gesamtfläche pro Wohnung summiert) -> eine Wohnung kann
-    // hier mehrere Balken gleichzeitig mitzählen (je ein Zimmer) bzw. beim Filtern zählt sie, sobald
-    // mindestens eines ihrer Zimmer in die gewählte(n) Grössenklasse(n) fällt (siehe wohnungPasstZuFiltern).
     zimmergroesse: {
       keysOf: (w) => w.zimmergroessen.map((flaeche) => binIndexVon(flaeche, ZIMMERGROESSE_BINS)),
       keys: ZIMMERGROESSE_BINS.map((_, i) => i),
