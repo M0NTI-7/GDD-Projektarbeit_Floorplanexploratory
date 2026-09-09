@@ -48,13 +48,19 @@ const scene = new THREE.Scene();
 // Kein scene.background -> Canvas bleibt transparent, der weisse "Papier"-Hintergrund kommt jetzt
 // von der Seite (siehe index.html), damit die Donut-Overlays dahinter sichtbar durchscheinen können.
 
-// Links ist per CSS (--linker-rand, siehe index.html) fest Platz für Titel + Filter reserviert; die
-// Zeichnung selbst beginnt erst danach (kein Rand oben/unten/rechts). Einzige Quelle für diesen Wert
-// ist die CSS-Variable, damit er nicht an zwei Stellen gepflegt werden muss.
-const linkerRandPx = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--linker-rand")) || 0;
+// Oben ist per CSS (--oberer-rand, siehe index.html) fest Platz für die Filterleiste reserviert; die
+// Zeichnung selbst beginnt erst danach (kein Rand links/rechts/unten). Der CSS-Wert gilt nur als
+// Fallback für den allerersten Sekundenbruchteil (versteckt hinter #splash) - danach hält ein
+// ResizeObserver auf #filter-leiste (siehe weiter unten) obererRandPx synchron mit der tatsächlich
+// gerenderten Höhe der Leiste, da diese sich beim Ein-/Ausklappen und je nach Tab-Slot ändert.
+let obererRandPx = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--oberer-rand")) || 0;
 
 function zeichenBreite() {
-  return window.innerWidth - linkerRandPx;
+  return window.innerWidth;
+}
+
+function zeichenHoehe() {
+  return window.innerHeight - obererRandPx;
 }
 
 let frustumSize = 50;
@@ -70,7 +76,7 @@ let detailSichtbar = false;
 // zeigen dadurch anfangs bewusst nichts, bis reingezoomt oder ein anderes Geschoss gefiltert wird.
 const STARTGESCHOSS_LABEL = "0101 | 01 OG";
 
-const aspect = zeichenBreite() / window.innerHeight;
+const aspect = zeichenBreite() / zeichenHoehe();
 const camera = new THREE.OrthographicCamera(
   (-frustumSize * aspect) / 2,
   (frustumSize * aspect) / 2,
@@ -93,7 +99,7 @@ function kameraFrustumAktualisieren(aspect) {
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true }); // alpha: Canvas-Hintergrund transparent statt opak
 renderer.setClearColor(0x000000, 0); // alpha:true allein reicht nicht, sonst clear'd Three.js weiterhin opak (Standard: Schwarz, Alpha 1)
-renderer.setSize(zeichenBreite(), window.innerHeight);
+renderer.setSize(zeichenBreite(), zeichenHoehe());
 renderer.setPixelRatio(window.devicePixelRatio); // greift die Pixel des Bildschirms ab für die schärfe
 document.body.appendChild(renderer.domElement); // braucht es damit überhaupt etwas darstellt
 
@@ -113,32 +119,114 @@ controls.mouseButtons = {
   RIGHT: THREE.MOUSE.ROTATE,
 };
 
-// Verhalten: Past die Zeichnung der Fenstergrösse an falls diese geändert wird
+// Verhalten: Passt die Zeichnung der Fenstergrösse an - sowohl bei echten Fenster-Resizes als auch
+// (via ResizeObserver weiter unten) wenn sich die Höhe der Filterleiste selbst ändert (Ein-/Ausklappen,
+// Tab-Wechsel mit unterschiedlich hohem Chart).
 
-window.addEventListener("resize", () => {
-  const aspect = zeichenBreite() / window.innerHeight;
+function layoutAktualisieren() {
+  const aspect = zeichenBreite() / zeichenHoehe();
   kameraFrustumAktualisieren(aspect);
 
-  renderer.setSize(zeichenBreite(), window.innerHeight);
+  renderer.setSize(zeichenBreite(), zeichenHoehe());
   for (const material of Object.values(stiftfarbeUmfassungslinie)) {
     renderer.getSize(material.resolution);
   }
   for (const material of gebaeudeLinienMaterialien) {
     renderer.getSize(material.resolution);
   }
-});
+}
 
-// Verhalten: Der "Filter ausblenden/anzeigen"-Button klappt die Diagramme im Filter-Panel ein/aus
-// (siehe .filter-panel.eingeklappt in index.html), der Header mit den Zählern bleibt sichtbar.
+window.addEventListener("resize", layoutAktualisieren);
 
-const filterPanelElement = document.querySelector(".filter-panel");
+// Verhalten: Der "Filter ausblenden/anzeigen"-Button klappt die Slot-Inhalte der Filterleiste ein/aus
+// (siehe .filter-leiste.eingeklappt in index.html), Kopf-Slot und Tab-Titelzeilen bleiben sichtbar. Da
+// sich die Höhe der Leiste dadurch (und je nach aktivem Tab) ändert, hält ein ResizeObserver
+// obererRandPx synchron statt ihn nur einmal aus der CSS-Variable zu lesen (siehe obererRandPx oben).
+
+const filterLeisteElement = document.getElementById("filter-leiste");
 const filterToggleButton = document.getElementById("filter-toggle");
 
 filterToggleButton.addEventListener("click", () => {
-  const eingeklappt = filterPanelElement.classList.toggle("eingeklappt");
-  filterToggleButton.textContent = eingeklappt ? "Filter anzeigen" : "Filter ausblenden";
+  const eingeklappt = filterLeisteElement.classList.toggle("eingeklappt");
+  filterToggleButton.textContent = eingeklappt ? "▾" : "▴";
+  filterToggleButton.setAttribute("aria-label", eingeklappt ? "Filter anzeigen" : "Filter ausblenden");
   filterToggleButton.setAttribute("aria-expanded", String(!eingeklappt));
 });
+
+new ResizeObserver(() => {
+  obererRandPx = filterLeisteElement.getBoundingClientRect().height;
+  // Muss zusätzlich auf die CSS-Variable zurückgeschrieben werden, nicht nur die JS-Variable setzen:
+  // --oberer-rand bestimmt die tatsächliche CSS-top-Position des <canvas> (siehe index.html), während
+  // obererRandPx nur für Kamera-/Renderer-Berechnungen genutzt wird. Ohne diese Zeile bleibt die
+  // Canvas-Position auf dem CSS-Fallback-Wert eingefroren und die (meist höhere) echte Leiste überdeckt
+  // den oberen Streifen der Zeichnung.
+  document.documentElement.style.setProperty("--oberer-rand", `${obererRandPx}px`);
+  layoutAktualisieren();
+}).observe(filterLeisteElement);
+
+// --------------------------------------------------------------------------------
+
+// Ziel: Gebäude-/Wohnungs-/Zimmer-Slot der Filterleiste zeigen ihre mehreren Kennzahlen als Tabs statt
+// alle gleichzeitig - unabhängig von DIMENSIONEN/WOHNUNGEN (läuft daher schon vor dem Datenladen).
+// Jeder Tab liest sein Label direkt aus dem h3 der zugehörigen (unveränderten) .chart-card, damit der
+// Titel nicht doppelt gepflegt werden muss.
+
+// --------------------------------------------------------------------------------
+
+const FILTER_GRUPPEN = {
+  gebaeude: ["gf", "hnfAnteil", "wohnungen", "anzahlWohnungenProGeschoss", "gebaeudetiefe", "geschossigkeit"],
+  wohnungen: ["zimmer", "wohnungsgroesse", "anzahlBadezimmer"],
+  zimmer: ["kuechengroesse", "esszimmergroesse", "wohnenSchlafenGroesse", "balkongroesse", "reduitgroesse", "nasszellengroesse"],
+};
+
+function filterTabsInitialisieren() {
+  for (const [gruppenName, dims] of Object.entries(FILTER_GRUPPEN)) {
+    const slot = document.querySelector(`.filter-slot[data-slot="${gruppenName}"]`);
+    const nav = slot.querySelector(".filter-tabs");
+    const body = slot.querySelector(".filter-slot-body");
+
+    dims.forEach((dim, i) => {
+      const card = body.querySelector(`.chart-card[data-dim="${dim}"]`);
+      const label = card.querySelector("h3").textContent;
+
+      const tab = document.createElement("button");
+      tab.type = "button";
+      tab.className = "filter-tab";
+      tab.dataset.dim = dim;
+      const punkt = document.createElement("span");
+      punkt.className = "filter-tab-dot";
+      tab.append(label, punkt);
+
+      tab.addEventListener("click", () => {
+        for (const anderesTab of nav.querySelectorAll(".filter-tab")) anderesTab.classList.remove("aktiv");
+        for (const andereCard of body.querySelectorAll(".chart-card")) andereCard.classList.remove("aktiv");
+        tab.classList.add("aktiv");
+        card.classList.add("aktiv");
+      });
+
+      if (i === 0) {
+        tab.classList.add("aktiv");
+        card.classList.add("aktiv");
+      }
+      nav.appendChild(tab);
+    });
+  }
+}
+filterTabsInitialisieren();
+
+// Aufgerufen aus filterAendern() (siehe Crossfilter-Abschnitt) - zeigt per Punkt auf einem Tab an, wenn
+// dessen Kennzahl gerade gefiltert ist, auch während ein anderer Tab derselben Gruppe sichtbar ist.
+function filterTabIndikatorenAktualisieren() {
+  for (const dim in filterAuswahl) {
+    const hatAuswahl = filterAuswahl[dim].size > 0;
+    if (dim === "geschoss") {
+      document.querySelector(".filter-slot--geschoss summary").classList.toggle("hat-auswahl", hatAuswahl);
+      continue;
+    }
+    const tab = document.querySelector(`.filter-tab[data-dim="${dim}"]`);
+    if (tab) tab.classList.toggle("hat-auswahl", hatAuswahl);
+  }
+}
 
 // Verhalten: Hier wird pro Gebäude eine HTML-Overlay-Gruppe (Donut + Zimmer-Legende) auf die
 // projizierte Bildschirmposition der Gebäudemitte gesetzt und mit dem Kamera-Zoom skaliert. Als
@@ -175,10 +263,10 @@ function gebaeudeOverlaysAktualisieren() {
 
   for (const { position, element } of gebaeudeOverlays) {
     const projiziert = position.clone().project(camera);
-    // linkerRandPx dazuzählen: die NDC-Koordinaten (-1 bis 1) beziehen sich auf die Zeichenfläche,
+    // obererRandPx dazuzählen: die NDC-Koordinaten (-1 bis 1) beziehen sich auf die Zeichenfläche,
     // die Overlays sind aber fixed im ganzen Fenster positioniert (siehe .gebaeude-overlay in index.html).
-    element.style.left = `${linkerRandPx + ((projiziert.x + 1) / 2) * zeichenBreite()}px`;
-    element.style.top = `${((1 - projiziert.y) / 2) * window.innerHeight}px`;
+    element.style.left = `${((projiziert.x + 1) / 2) * zeichenBreite()}px`;
+    element.style.top = `${obererRandPx + ((1 - projiziert.y) / 2) * zeichenHoehe()}px`;
     element.style.transform = `scale(${massstab})`;
   }
 }
@@ -227,19 +315,41 @@ const NUMERISCHE_SPALTEN = new Set(["flaeche", "zimmer_zaehler"]);
 // eines Fehlers) statt eines klaren Fehlers. Deshalb wird die Datei hier selbst als Blob geladen
 // (funktioniert zuverlässig) und Papaparse liest den Blob dann in 5-MB-Stücken - dieselbe Menge
 // Daten, aber nie mehr als ein Stück gleichzeitig im Speicher.
+const splashFortschrittElement = document.getElementById("splash-fortschritt");
+
 fetch(csvPfad)
   .then((antwort) => antwort.blob())
   .then((blob) => {
     const gebaeudeDaten = [];
+    const gesehenGebaeudeIds = new Set(); // wächst live mit, für die Gebäude-Anzahl in der Ladeanzeige
     Papa.parse(blob, {
       header: true,
       skipEmptyLines: true,
       chunkSize: 5 * 1024 * 1024,
       transform: (wert, spalte) => (NUMERISCHE_SPALTEN.has(spalte) ? (wert === "" ? 0 : Number(wert)) : wert),
       chunk: (ergebnis) => {
-        for (const zeile of ergebnis.data) gebaeudeDaten.push(zeile);
+        for (const zeile of ergebnis.data) {
+          gebaeudeDaten.push(zeile);
+          gesehenGebaeudeIds.add(zeile.gebaeude_id);
+        }
+        // ergebnis.meta.cursor ist die Byteposition im Blob - falls das in dieser Papaparse-Version
+        // beim Blob-Parsing unzuverlässig ist (NaN/undefined), fällt die Anzeige auf die reine
+        // Gebäudezahl zurück statt einen falschen Prozentwert zu zeigen.
+        const prozent = Math.round((ergebnis.meta.cursor / blob.size) * 100);
+        splashFortschrittElement.textContent = Number.isFinite(prozent)
+          ? `${prozent}% geladen (${gesehenGebaeudeIds.size.toLocaleString("de-CH")} Gebäude)`
+          : `${gesehenGebaeudeIds.size.toLocaleString("de-CH")} Gebäude geladen…`;
       },
-      complete: () => gebaeudeDarstellen(gebaeudeDaten),
+      complete: () => {
+        // Das Parsen selbst ist hier fertig (Prozentanzeige stand zuletzt bei ~100%), aber
+        // gebaeudeDarstellen() braucht danach nochmals mehrere Sekunden (Gruppieren, Geometrien
+        // aufbauen, Rechteckpackung), ohne dass sich der Hauptthread währenddessen für ein DOM-Update
+        // freigibt - dieser Text macht die Wartezeit sichtbar/verständlich, statt dass die Prozentzahl
+        // einfach bei ~100% hängen bleibt. setTimeout statt direktem Aufruf, damit der Browser den
+        // neuen Text noch rendert, bevor gebaeudeDarstellen() den Hauptthread synchron blockiert.
+        splashFortschrittElement.textContent = "Grundrisse werden geladen...";
+        setTimeout(() => gebaeudeDarstellen(gebaeudeDaten), 0);
+      },
     });
   });
 
@@ -553,6 +663,10 @@ function gebaeudeDarstellen(zeilen) {
         geschossLabel: gruppe.geschossLabel,
         entitaetTyp: gruppe.entitaetTyp,
         gefiltertSichtbar: true, // von gebaeudeDimmingAktualisieren aktuell gehalten, initial nichts gefiltert
+        // Nur die initial sichtbare Geschossfläche (STARTGESCHOSS_LABEL) startet unenthüllt und wird von
+        // enthuellungStarten() zufällig gestaffelt eingeblendet ("Ameisenhaufen"-Reveal, Akt 2); alles
+        // andere (andere Geschosse, Raum/Öffnung/Ausstattung) folgt unverändert Filter/Zoom.
+        enthuellt: !(gruppe.entitaetTyp === "Geschossfläche" && gruppe.geschossLabel === STARTGESCHOSS_LABEL),
       });
     }
   }
@@ -564,6 +678,91 @@ function gebaeudeDarstellen(zeilen) {
   // zufällig gleich ausfallen und Raum/Öffnung/Ausstattung blieben fälschlich ausgeblendet.
   detailSichtbarkeitAktualisieren(true);
   filterPanelErstellen();
+
+  splashAusblenden();
+  enthuellungStarten(gebaeudeListe);
+}
+
+// --------------------------------------------------------------------------------
+
+// Ziel: Akt 2 - Gebäude "erscheinen" beim ersten Laden zufällig gestaffelt (wie gebaut, nicht wie
+// hereingeflogen/skaliert - reines Sichtbarkeits-Toggle auf bereits fertig aufgebauten Objekten), ganz
+// ohne Filterleiste. Erst NACHDEM alle Gebäude enthüllt sind (oder der Nutzer die Enthüllung per
+// Interaktion überspringt), blendet die Filterleiste per Crossfade ein - so bleibt der erste Eindruck
+// ungestört nur der Schwarzplan, bevor die Bedienoberfläche dazukommt.
+
+// --------------------------------------------------------------------------------
+
+const ENTHUELLUNG_DAUER_MS = 4000; // Gesamtfenster, in dem alle Gebäude zufällig auftauchen (~3-5s)
+
+const splashElement = document.getElementById("splash");
+const kopfTitelElement = document.getElementById("kopf-titel");
+
+function splashAusblenden() {
+  splashElement.classList.add("ausgeblendet");
+}
+
+function filterLeisteEinblenden() {
+  filterLeisteElement.classList.add("sichtbar");
+  kopfTitelElement.classList.add("sichtbar");
+}
+
+// display:none erst NACH der Opacity-Transition, sonst würde #splash sofort aus dem Layout
+// verschwinden und könnte während des Fades keine Klicks/Pointer-Events mehr blockieren wollen -
+// pointer-events:none (siehe CSS .ausgeblendet) übernimmt das ohnehin schon ab Transitionsbeginn.
+splashElement.addEventListener("transitionend", () => {
+  splashElement.style.display = "none";
+});
+
+function enthuellungStarten(gebaeudeListe) {
+  const jetzt = performance.now();
+  const wartendeGruppen = [];
+  for (const gebaeude of gebaeudeListe) {
+    for (const gruppe of gebaeude.linienMaterialien) {
+      if (gruppe.enthuellt) continue;
+      wartendeGruppen.push({ gruppe, zeitpunkt: jetzt + Math.random() * ENTHUELLUNG_DAUER_MS });
+    }
+  }
+  if (wartendeGruppen.length === 0) {
+    filterLeisteEinblenden();
+    return;
+  }
+
+  function schritt() {
+    const aktuelleZeit = performance.now();
+    let alleFertig = true;
+    for (const eintrag of wartendeGruppen) {
+      if (eintrag.gruppe.enthuellt) continue;
+      if (aktuelleZeit >= eintrag.zeitpunkt) {
+        eintrag.gruppe.enthuellt = true;
+        // Sichtbarkeit aus dem AKTUELLEN Filter-/Zoom-Zustand neu ableiten statt stur visible=true zu
+        // setzen - so kann ein Gebäude, das während des Reveals weggefiltert oder rausgezoomt wurde,
+        // trotzdem korrekt unsichtbar bleiben, statt kurz aufzublitzen.
+        linienSichtbarkeitAnwenden(eintrag.gruppe);
+      } else {
+        alleFertig = false;
+      }
+    }
+    if (!alleFertig) requestAnimationFrame(schritt);
+    else filterLeisteEinblenden();
+  }
+  requestAnimationFrame(schritt);
+
+  // Interaktion (Klick/Scroll) während des Reveals beendet es sofort - sonst könnten neu gefilterte
+  // oder reingezoomte Gebäude bis zu ihrem zufälligen Zeitpunkt künstlich verzögert erscheinen.
+  const ueberspringen = () => {
+    for (const eintrag of wartendeGruppen) {
+      if (!eintrag.gruppe.enthuellt) {
+        eintrag.gruppe.enthuellt = true;
+        linienSichtbarkeitAnwenden(eintrag.gruppe);
+      }
+    }
+    filterLeisteEinblenden();
+    window.removeEventListener("pointerdown", ueberspringen);
+    window.removeEventListener("wheel", ueberspringen);
+  };
+  window.addEventListener("pointerdown", ueberspringen);
+  window.addEventListener("wheel", ueberspringen);
 }
 
 // --------------------------------------------------------------------------------
@@ -584,9 +783,9 @@ function packPositionenBerechnen(gebaeudeUnterliste) {
   );
   // Packfläche grosszügiger als die reine Summe wählen, sonst braucht der Zufalls-Algorithmus
   // zu viele Versuche bzw. findet für die letzten Gebäude keinen Platz mehr.
-  // Das Seitenverhältnis der Packfläche folgt der tatsächlichen Zeichenfläche (ohne linken Rand),
+  // Das Seitenverhältnis der Packfläche folgt der tatsächlichen Zeichenfläche (ohne oberen Rand),
   // damit die Anordnung dem sichtbaren Ausschnitt entspricht statt quadratisch zu sein.
-  const fensterAspect = zeichenBreite() / window.innerHeight;
+  const fensterAspect = zeichenBreite() / zeichenHoehe();
   const packHoehe = Math.sqrt(gesamtFlaeche / (0.3 * fensterAspect)); // 0.3 bedeutet 30% der Bildschirmfläche wird mit Gebäude dargestellt ?? evt. später mit einem Regler steuern
   const packBreite = packHoehe * fensterAspect;
 
@@ -711,8 +910,8 @@ function kameraAufGebaeudeZentrieren(gebaeudeListe) {
   const zentrumX = (minX + maxX) / 2;
   const zentrumZ = (minZ + maxZ) / 2;
 
-  const aktuellesAspect = zeichenBreite() / window.innerHeight;
-  // Kein künstlicher Rand mehr (kein randFaktor) - die Zeichnung soll oben/unten/rechts direkt an die
+  const aktuellesAspect = zeichenBreite() / zeichenHoehe();
+  // Kein künstlicher Rand mehr (kein randFaktor) - die Zeichnung soll links/unten/rechts direkt an die
   // Kante gehen. Math.max wählt trotzdem die Achse mit dem grösseren Platzbedarf, sonst würde die
   // andere Achse abgeschnitten - stimmt das Seitenverhältnis von Anordnung und Zeichenfläche nicht
   // exakt überein, bleibt auf GENAU EINEM Achsenpaar (oben+unten ODER links+rechts) unvermeidbar ein
@@ -911,12 +1110,14 @@ function linienSichtbarkeitAnwenden(gruppe) {
   // die gefilterten Geschosse, nicht zwingend das Startgeschoss.
   const geschossFilterAktiv = filterAuswahl.geschoss.size > 0;
   const geschossBasisSichtbar = geschossFilterAktiv || gruppe.geschossLabel === STARTGESCHOSS_LABEL;
-  gruppe.linien.visible = gruppe.gefiltertSichtbar && (geschossBasisSichtbar || detailSichtbar);
+  // gruppe.enthuellt gated den Akt-2-Reveal (siehe enthuellungStarten): bis ein Gebäude "an der Reihe"
+  // ist, bleibt es unsichtbar, auch wenn Filter/Zoom es sonst zeigen würden.
+  gruppe.linien.visible = gruppe.gefiltertSichtbar && gruppe.enthuellt && (geschossBasisSichtbar || detailSichtbar);
 
   // Schwarzplan-Füllung: wie die Geschossfläche-Linie selbst, aber nur solange NICHT reingezoomt ist -
   // sobald die Detailschwelle erreicht ist, verschwindet die Füllung wieder.
   if (gruppe.fuellung) {
-    gruppe.fuellung.visible = gruppe.gefiltertSichtbar && geschossBasisSichtbar && !detailSichtbar;
+    gruppe.fuellung.visible = gruppe.gefiltertSichtbar && gruppe.enthuellt && geschossBasisSichtbar && !detailSichtbar;
   }
 }
 
@@ -1317,6 +1518,7 @@ function filterKopfzeileAktualisieren(gesamt, gebaeudeGefiltertAnzahl) {
 
 function filterAendern() {
   for (const dim in DIMENSIONEN) diagrammRendern(dim);
+  filterTabIndikatorenAktualisieren();
 
   const { zaehlerProGebaeude, gesamt } = matchAnzahlProGebaeudeBerechnen();
   const filterAktiv = filterKopfzeileAktualisieren(gesamt, zaehlerProGebaeude.size);
