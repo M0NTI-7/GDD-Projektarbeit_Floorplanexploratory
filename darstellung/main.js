@@ -27,16 +27,8 @@ const stiftfarbeUmfassungslinie = {
 // einziges Material pro Typ für alle Gebäude gemeinsam) -> jedes Gebäude kann seine eigenen Linien
 // unabhängig ein-/ausblenden (siehe gebaeudeDimmingAktualisieren), ohne die anderer Gebäude zu berühren.
 const gebaeudeLinienMaterialien = []; // alle geklonten Materialien, für resize (siehe unten)
-
-const flaechenfarbenSia416farben = {
-  "HNF": "#c0392b",
-  "NNF": "#e08214",
-  "VF": "#f1c40f",
-  "FF": "#2e86c1",
-  "KFT": "#7b4b2a",
-  "KFN": "#c08a3e",
-  "ANF": "#2ecc71", // Farbe stimmt noch nicht ????
-};
+const alleWohnungsKreise = []; // alle Wohnungs-Kreis-Meshes, für die Zoom-Skalierung (siehe wohnungsKreiseSkalierenAnKamera)
+const alleZimmerKonturen = []; // alle Zimmer-/Bad-Strich-Konturen, für die Billboard-Rotation (siehe wohnungsKreiseSkalierenAnKamera)
 
 // --------------------------------------------------------------------------------
 
@@ -46,7 +38,7 @@ const flaechenfarbenSia416farben = {
 
 const scene = new THREE.Scene();
 // Kein scene.background -> Canvas bleibt transparent, der weisse "Papier"-Hintergrund kommt jetzt
-// von der Seite (siehe index.html), damit die Donut-Overlays dahinter sichtbar durchscheinen können.
+// von der Seite (siehe index.html).
 
 // Oben ist per CSS (--oberer-rand, siehe index.html) fest Platz für die Filterleiste reserviert; die
 // Zeichnung selbst beginnt erst danach (kein Rand links/rechts/unten). Der CSS-Wert gilt nur als
@@ -65,15 +57,18 @@ function zeichenHoehe() {
 
 let frustumSize = 50;
 
-// Ab welcher Zoomstufe Raum/Öffnung/Ausstattung dazukommen (Geschossfläche ist immer sichtbar) -
-// als sichtbare Höhe der Szene in Metern (frustumSize / camera.zoom). Einfach anpassen, falls sich
-// 50m beim Testen als zu früh/spät herausstellt.
-const DETAIL_SCHWELLE_METER = 400;
+const DETAIL_SCHWELLE_METER = 400; // Schwellenwert ab wann die einzelnen Räume dargestellt werden.
 let detailSichtbar = false;
 
-// Nur dieses Geschoss wird als Geschossfläche gezeigt, solange kein eigener Geschoss-Filter aktiv
-// ist (siehe linienSichtbarkeitAnwenden) - Gebäude ohne dieses Geschoss (z.B. eingeschossige Bauten)
-// zeigen dadurch anfangs bewusst nichts, bis reingezoomt oder ein anderes Geschoss gefiltert wird.
+const SCHWENK_SCHWELLE_RAD = THREE.MathUtils.degToRad(3);
+let kameraGeschwenkt = false;
+
+// Per Tastendruck (F, siehe Handler weiter unten) umschaltbar - true: Filteränderungen lösen kein
+// Neu-Packen der Gebäude und keine Kamera-Neuzentrierung mehr aus (siehe filterAendern). Default
+// false, damit sich der bewährte Ablauf (grob eingrenzen -> Gebäude packen sich, Kamera zentriert
+// mit) nicht ändert - erst beim Wechsel in die Feineinstellung fixiert man die Ansicht bewusst.
+let positionierungFixiert = false;
+
 const STARTGESCHOSS_LABEL = "0101 | 01 OG";
 
 const aspect = zeichenBreite() / zeichenHoehe();
@@ -82,8 +77,8 @@ const camera = new THREE.OrthographicCamera(
   (frustumSize * aspect) / 2,
   frustumSize / 2,
   -frustumSize / 2,
-  0.1, // alles was näher als 0.1 ist wird nicht dargestellt
-  1000 // alles was weiter weg als 1000 ist wird nicht dargestellt
+  0.01, // alles was näher als 0.1 ist wird nicht dargestellt
+  10000 // alles was weiter weg als 1000 ist wird nicht dargestellt
 );
 
 camera.position.set(0, 100, 0); // koordinatensystem = von vorne nicht wie CAD, Y ist die Höhe
@@ -103,9 +98,15 @@ renderer.setSize(zeichenBreite(), zeichenHoehe());
 renderer.setPixelRatio(window.devicePixelRatio); // greift die Pixel des Bildschirms ab für die schärfe
 document.body.appendChild(renderer.domElement); // braucht es damit überhaupt etwas darstellt
 
-for (const material of Object.values(stiftfarbeUmfassungslinie)) {
-  renderer.getSize(material.resolution);
+// Die LineMaterial-Linien ("fat lines") brauchen die aktuelle Renderer-Auflösung als Uniform, um ihre
+// Strichbreite bildschirmpixel-genau zu berechnen - muss daher jedes Mal aktualisiert werden, wenn sich
+// renderer.setSize()/setPixelRatio() ändert (siehe layoutAktualisieren und zeichnungAlsPngSpeichern).
+function linienMaterialAufloesungenAktualisieren() {
+  for (const material of Object.values(stiftfarbeUmfassungslinie)) renderer.getSize(material.resolution);
+  for (const material of gebaeudeLinienMaterialien) renderer.getSize(material.resolution);
 }
+
+linienMaterialAufloesungenAktualisieren();
 
 // Ziel: Die Kammerasteuerung ist korrekt eingestellt
 
@@ -128,30 +129,26 @@ function layoutAktualisieren() {
   kameraFrustumAktualisieren(aspect);
 
   renderer.setSize(zeichenBreite(), zeichenHoehe());
-  for (const material of Object.values(stiftfarbeUmfassungslinie)) {
-    renderer.getSize(material.resolution);
-  }
-  for (const material of gebaeudeLinienMaterialien) {
-    renderer.getSize(material.resolution);
-  }
+  linienMaterialAufloesungenAktualisieren();
 }
 
 window.addEventListener("resize", layoutAktualisieren);
 
-// Verhalten: Der "Filter ausblenden/anzeigen"-Button klappt die Slot-Inhalte der Filterleiste ein/aus
-// (siehe .filter-leiste.eingeklappt in index.html), Kopf-Slot und Tab-Titelzeilen bleiben sichtbar. Da
-// sich die Höhe der Leiste dadurch (und je nach aktivem Tab) ändert, hält ein ResizeObserver
-// obererRandPx synchron statt ihn nur einmal aus der CSS-Variable zu lesen (siehe obererRandPx oben).
+// Verhalten: Gebäude/Wohnungen/Zimmer klappen unabhängig voneinander auf/zu - Klick auf das
+// Slot-Label (siehe .filter-slot--tabs .filter-slot-label in index.html) togglet NUR dessen eigenen
+// .filter-slot-body, nicht die anderen Slots. Da sich die Höhe der Leiste dadurch (und je nach
+// aktivem Tab) ändert, hält ein ResizeObserver obererRandPx synchron statt ihn nur einmal aus der
+// CSS-Variable zu lesen (siehe obererRandPx oben).
 
 const filterLeisteElement = document.getElementById("filter-leiste");
-const filterToggleButton = document.getElementById("filter-toggle");
 
-filterToggleButton.addEventListener("click", () => {
-  const eingeklappt = filterLeisteElement.classList.toggle("eingeklappt");
-  filterToggleButton.textContent = eingeklappt ? "▾" : "▴";
-  filterToggleButton.setAttribute("aria-label", eingeklappt ? "Filter anzeigen" : "Filter ausblenden");
-  filterToggleButton.setAttribute("aria-expanded", String(!eingeklappt));
-});
+for (const label of document.querySelectorAll(".filter-slot--tabs .filter-slot-label")) {
+  label.addEventListener("click", () => {
+    const slot = label.closest(".filter-slot--tabs");
+    const eingeklappt = slot.classList.toggle("eingeklappt");
+    label.setAttribute("aria-expanded", String(!eingeklappt));
+  });
+}
 
 new ResizeObserver(() => {
   obererRandPx = filterLeisteElement.getBoundingClientRect().height;
@@ -193,9 +190,7 @@ function filterTabsInitialisieren() {
       tab.type = "button";
       tab.className = "filter-tab";
       tab.dataset.dim = dim;
-      const punkt = document.createElement("span");
-      punkt.className = "filter-tab-dot";
-      tab.append(label, punkt);
+      tab.append(label);
 
       tab.addEventListener("click", () => {
         for (const anderesTab of nav.querySelectorAll(".filter-tab")) anderesTab.classList.remove("aktiv");
@@ -214,36 +209,17 @@ function filterTabsInitialisieren() {
 }
 filterTabsInitialisieren();
 
-// Aufgerufen aus filterAendern() (siehe Crossfilter-Abschnitt) - zeigt per Punkt auf einem Tab an, wenn
-// dessen Kennzahl gerade gefiltert ist, auch während ein anderer Tab derselben Gruppe sichtbar ist.
-function filterTabIndikatorenAktualisieren() {
-  for (const dim in filterAuswahl) {
-    const hatAuswahl = filterAuswahl[dim].size > 0;
-    if (dim === "geschoss") {
-      document.querySelector(".filter-slot--geschoss summary").classList.toggle("hat-auswahl", hatAuswahl);
-      continue;
-    }
-    const tab = document.querySelector(`.filter-tab[data-dim="${dim}"]`);
-    if (tab) tab.classList.toggle("hat-auswahl", hatAuswahl);
-  }
-}
-
-// Verhalten: Hier wird pro Gebäude eine HTML-Overlay-Gruppe (Donut + Zimmer-Legende) auf die
-// projizierte Bildschirmposition der Gebäudemitte gesetzt und mit dem Kamera-Zoom skaliert. Als
-// CSS-Elemente statt Three.js-Meshes sind Donut, Zimmer-Text und -Kreise dadurch garantiert
-// konsistent zueinander positioniert (feste Pixel-Abstände zueinander), schrumpfen aber gemeinsam
-// mit den Gebäuden beim Rauszoomen statt bei jeder Zoomstufe gleich gross zu bleiben.
-
-const donutDurchmesserPx = 60; // einheitliche Bildschirmgrösse für alle Donuts
+// Verhalten: Hier wird pro Gebäude eine HTML-Overlay-Gruppe (Zimmer-Legende) auf die projizierte
+// Bildschirmposition der Gebäudemitte gesetzt und mit dem Kamera-Zoom skaliert. Als CSS-Elemente
+// statt Three.js-Meshes sind Zimmer-Text und -Kreise dadurch garantiert konsistent zueinander
+// positioniert (feste Pixel-Abstände zueinander), schrumpfen aber gemeinsam mit den Gebäuden beim
+// Rauszoomen statt bei jeder Zoomstufe gleich gross zu bleiben.
 
 const gebaeudeOverlays = []; // { position: THREE.Vector3, element: HTMLElement }
 
-function gebaeudeOverlayErstellen(mitteX, mitteZ, flaechePro416Kategorie, zimmerProWohnung) {
+function gebaeudeOverlayErstellen(mitteX, mitteZ, zimmerProWohnung) {
   const element = document.createElement("div");
   element.className = "gebaeude-overlay";
-
-  // const donut = donutErstellen(flaechePro416Kategorie);
-  // if (donut) element.appendChild(donut);
 
   // const legende = zimmerLegendeErstellen(zimmerProWohnung);
   // if (legende) element.appendChild(legende);
@@ -288,9 +264,52 @@ function detailSichtbarkeitAktualisieren(erzwingen = false) {
   }
 }
 
+// Verhalten: Reagiert auf den aktuellen Kamera-Kippwinkel (OrbitControls.getPolarAngle(), 0 = senkrecht
+// von oben) - siehe SCHWENK_SCHWELLE_RAD oben. Rechnet nur bei einer tatsächlichen Änderung neu, analog
+// zu detailSichtbarkeitAktualisieren.
+function kameraSchwenkAktualisieren(erzwingen = false) {
+  const neuGeschwenkt = controls.getPolarAngle() > SCHWENK_SCHWELLE_RAD;
+  if (!erzwingen && neuGeschwenkt === kameraGeschwenkt) return;
+
+  kameraGeschwenkt = neuGeschwenkt;
+  for (const gebaeude of gebaeudeNachId.values()) {
+    for (const gruppe of gebaeude.linienMaterialien) {
+      linienSichtbarkeitAnwenden(gruppe);
+    }
+  }
+}
+
+// Ab dieser sichtbaren Szenenhöhe (Meter, siehe sichtbareHoeheMeter oben) hat der Wohnungs-Kreis genau
+// seine Basisgrösse (Fläche * Faktor, siehe wohnungsKreiseErstellen) - bei weiterem Rauszoomen wächst
+// er proportional mit, damit er auch bei einer Übersicht über viele Gebäude noch erkennbar bleibt.
+// Beim Reinzoomen bleibt er auf der Basisgrösse (kein zusätzliches Schrumpfen).
+const WOHNUNGSKREIS_REFERENZ_METER = 300;
+
+const ZIMMER_KONTUR_EINFUEGEPUNKT_OFFSET = THREE.MathUtils.degToRad(120); // fixer Zusatz-Drehwinkel (Gegenuhrzeigersinn), verschiebt nur den "Start" des Strich-Musters relativ zur Kamera
+
+function wohnungsKreiseSkalierenAnKamera() {
+  const sichtbareHoeheMeter = frustumSize / camera.zoom;
+  const faktor = Math.max(1, sichtbareHoeheMeter / WOHNUNGSKREIS_REFERENZ_METER);
+  for (const kreis of alleWohnungsKreise) {
+    if (kreis.visible) kreis.scale.setScalar(faktor);
+  }
+
+  // Billboard-Effekt: die Zimmer-/Bad-Strich-Konturen drehen sich um ihre eigene Y-Achse mit, damit
+  // sie beim Umkreisen der Szene immer zur Kamera hin ausgerichtet bleiben (sonst stünde man beim
+  // Navigieren teils seitlich vor einem Strich und er wäre kaum sichtbar). Bei Orthographic-Kamera
+  // (parallele Strahlen statt Fluchtpunkt) ist der Azimutwinkel für die ganze Szene gleich - ein
+  // einziger Wert reicht für alle Wohnungen, statt pro Wohnung einzeln zu rechnen.
+  const azimut = controls.getAzimuthalAngle() + ZIMMER_KONTUR_EINFUEGEPUNKT_OFFSET;
+  for (const kontur of alleZimmerKonturen) {
+    if (kontur.visible) kontur.rotation.y = azimut;
+  }
+}
+
 renderer.setAnimationLoop(() => {
   controls.update();
   detailSichtbarkeitAktualisieren();
+  kameraSchwenkAktualisieren();
+  wohnungsKreiseSkalierenAnKamera();
   gebaeudeOverlaysAktualisieren();
   renderer.render(scene, camera);
 });
@@ -301,14 +320,13 @@ renderer.setAnimationLoop(() => {
 
 // --------------------------------------------------------------------------------
 
-//const csvPfad = "../data-prep/geometries_erste100.csv"; // für zum Testen
-const csvPfad = "../data-prep/geometries_final_angereichert.csv";
+const csvPfad = "../data-prep/geometries_erste100.csv"; // für zum Testen
+// const csvPfad = "../data-prep/geometries_final_angereichert.csv";
 
 // dynamicTyping:true würde Papaparse dazu bringen, bei JEDER Zelle eine Zahlen-Erkennung
 // laufen zu lassen - auch auf der sehr langen "koordinaten"-Spalte (WKT-Polygon-Strings).
-// Stattdessen werden hier gezielt nur die beiden tatsächlich numerisch gebrauchten Spalten
-// umgewandelt.
-const NUMERISCHE_SPALTEN = new Set(["flaeche", "zimmer_zaehler"]);
+// Stattdessen werden hier gezielt nur die tatsächlich numerisch gebrauchten Spalten umgewandelt.
+const NUMERISCHE_SPALTEN = new Set(["flaeche", "zimmer_zaehler", "hoehenkote"]);
 
 // Papa.parse(url, {download:true}) lädt und dekodiert die Antwort intern als EINEN einzigen
 // String. Bei einer Datei dieser Grösse (500+ MB) schlägt das fehl (liefert leere Daten statt
@@ -372,11 +390,11 @@ function wktZuKonturen(wkt) {
   );
 }
 
-function segmenteHinzufuegen(zielArray, kontur) {
+function segmenteHinzufuegen(zielArray, kontur, hoehenkote = 0) {
   for (let i = 0; i < kontur.length - 1; i++) {
     const [x0, y0] = kontur[i];
     const [x1, y1] = kontur[i + 1];
-    zielArray.push(x0, 0, y0, x1, 0, y1); // die beiden 0 sind die Höhe
+    zielArray.push(x0, hoehenkote, y0, x1, hoehenkote, y1); // die beiden mittleren Werte sind die Höhe
   }
 }
 
@@ -386,6 +404,20 @@ function segmenteHinzufuegen(zielArray, kontur) {
 // 90°-Drehung (siehe unten) die von der Kamera abgewandte Seite gerendert und die Füllung wäre
 // unsichtbar statt schwarz.
 const schwarzplanMaterial = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.DoubleSide });
+
+const gestapelteFuellungMaterial = new THREE.MeshBasicMaterial({ color: "#F0EDE4", side: THREE.DoubleSide }); // Farbe: GF Mesh bei Isometrie
+
+// gruppe.fuellung ist entweder ein einzelnes Mesh, eine THREE.Group mit mehreren Meshes, oder null
+// (siehe schwarzplanFuellungErstellen) - diese Hilfsfunktion setzt das Material unabhängig davon,
+// welcher Fall gerade vorliegt.
+function fuellungMaterialSetzen(fuellung, material) {
+  if (!fuellung) return;
+  if (fuellung.isMesh) {
+    fuellung.material = material;
+  } else {
+    for (const mesh of fuellung.children) mesh.material = material;
+  }
+}
 
 // Ray-Casting-Test: liegt punkt innerhalb von kontur? Damit lässt sich unterscheiden, ob eine
 // zusätzliche Kontur ein Loch (liegt innerhalb einer grösseren Aussenkontur) oder ein eigenständiges,
@@ -436,7 +468,7 @@ function schwarzplanFuellungErstellen(rohZeilen) {
       // ShapeGeometry liegt lokal in der XY-Ebene (z=0) - +90° um X dreht (x,y,0) nach (x,0,y), also
       // in dieselbe XZ-Ebene wie die Umfassungslinien (siehe segmenteHinzufuegen).
       mesh.rotation.x = Math.PI / 2;
-      mesh.position.y = -0.05; // knapp unter den Linien, damit diese immer sichtbar obenauf bleiben
+      mesh.position.y = zeile.hoehenkote - 0.01; // knapp unter den Linien, damit diese immer sichtbar obenauf bleiben
       meshes.push(mesh);
     }
   }
@@ -447,6 +479,259 @@ function schwarzplanFuellungErstellen(rohZeilen) {
   const gruppe = new THREE.Group();
   gruppe.add(...meshes);
   return gruppe;
+}
+
+// Komplett unsichtbares Material (opacity 0, kein Depth-Write) - nur fürs Raycasting gedacht, nie zu
+// sehen. depthWrite:false verhindert, dass diese Flächen trotz Unsichtbarkeit andere (z.B.
+// transparente) Objekte an derselben Stelle im Depth-Buffer verdecken. side:DoubleSide aus demselben
+// Grund wie bei schwarzplanMaterial (nicht garantierte Umlaufrichtung der WKT-Konturen) - Three.js
+// raycastet Mesh-Geometrie nur auf der durch material.side festgelegten Seite, sonst blieben manche
+// Räume je nach Winding unklickbar.
+const raumKlickflaecheMaterial = new THREE.MeshBasicMaterial({
+  transparent: true,
+  opacity: 0,
+  depthWrite: false,
+  side: THREE.DoubleSide,
+});
+
+// Sichtbares Gegenstück zu raumKlickflaecheMaterial - wird nur dem gerade angeklickten Raum-Mesh
+// zugewiesen (siehe Klick-Handler), alle anderen bleiben auf raumKlickflaecheMaterial (unsichtbar).
+// Halbtransparent, damit die Umfassungslinie des Raums (siehe mesh.position.y unten) nicht komplett
+// zugedeckt wirkt, sondern die Markierung eher wie ein Farbschleier darüber liegt.
+const raumHighlightMaterial = new THREE.MeshBasicMaterial({
+  color: 0xc0392b,
+  transparent: true,
+  opacity: 0.45,
+  depthWrite: false,
+  side: THREE.DoubleSide,
+});
+
+// Ziel: Räume sind bisher nur an ihrer Umfassungslinie anklickbar (siehe klickbareObjekte), nicht in
+// ihrer Fläche - ein sichtbares Material geht nicht, weil alle Geschosse koplanar auf y=0 liegen und
+// sich beim Reinzoomen mehrere Geschosse gleichzeitig zeigen können (siehe linienSichtbarkeitAnwenden)
+// - ein echtes Material würde darunterliegende Geschosse zudecken. Stattdessen pro Raum ein
+// unsichtbares Mesh (raumKlickflaecheMaterial) nur fürs Raycasting, analog zu
+// schwarzplanFuellungErstellen, aber mit userData.zeile statt userData.zeilen[faceIndex] pro Mesh -
+// jeder Raum bekommt sein eigenes Mesh statt einer gemeinsamen Geometrie mit vielen Facetten.
+function raumKlickflaechenErstellen(rohZeilen) {
+  const meshes = [];
+
+  for (const zeile of rohZeilen) {
+    if (zeile.konturen.length === 0) continue;
+
+    const nachFlaecheAbsteigend = zeile.konturen
+      .slice()
+      .sort((a, b) => Math.abs(flaecheAusKontur(b)) - Math.abs(flaecheAusKontur(a)));
+
+    const aussenKonturen = [];
+    for (const kontur of nachFlaecheAbsteigend) {
+      const passendeAussenkontur = aussenKonturen.find((a) => punktInKontur(kontur[0], a.kontur));
+      if (passendeAussenkontur) {
+        passendeAussenkontur.shape.holes.push(new THREE.Path(kontur.map(([x, y]) => new THREE.Vector2(x, y))));
+      } else {
+        const shape = new THREE.Shape(kontur.map(([x, y]) => new THREE.Vector2(x, y)));
+        aussenKonturen.push({ shape, kontur });
+      }
+    }
+
+    for (const { shape } of aussenKonturen) {
+      const geometrie = new THREE.ShapeGeometry(shape);
+      const mesh = new THREE.Mesh(geometrie, raumKlickflaecheMaterial);
+      mesh.rotation.x = Math.PI / 2; // gleiche Ausrichtung wie schwarzplanFuellungErstellen
+      mesh.position.y = zeile.hoehenkote - 0.005; // knapp unter den Linien, damit diese bei aktiviertem Highlight obenauf bleiben
+      mesh.userData.zeile = zeile;
+      meshes.push(mesh);
+    }
+  }
+
+  return meshes;
+}
+
+// Ziel: Pro Wohnung eine kreisförmige Flächenfüllung (30% Deckkraft, damit Räume darunter noch
+// durchscheinen), die bei aktivem Wohnungen-/Zimmer-Filter um die passenden Wohnungen erscheint
+// (siehe wohnungsMarkierungAktualisieren). Fläche des Kreises = Wohnungsgrundfläche * Faktor (siehe
+// unten), damit der Kreis sichtbar grösser als die Wohnung selbst ist.
+
+// Liest eine CSS-Custom-Property (z.B. "var(--series-zimmer)", wie DIMENSIONEN[dim].colorOf() sie
+// liefert) auf und wandelt sie in eine THREE.Color um - die Filter-Farben sind nur in index.html als
+// CSS-Variablen definiert, Three.js-Materialien verstehen aber kein var(...).
+function cssFarbeAufloesen(varAusdruck) {
+  const name = varAusdruck.match(/--[\w-]+/)[0];
+  const wert = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return new THREE.Color(wert);
+}
+
+// Baut pro Wohnung eine Strich-Kontur auf einem Radius um ihren Wohnungs-Kreis-Mittelpunkt - ein
+// voller Strich pro Einheit, ein halblanger für x.5 (z.B. 2.5 Zimmer = Strich-Strich-halber Strich).
+// Fixer Winkelabstand zwischen den Strich-MITTEN (nicht auf den ganzen Kreis verteilt), damit der
+// Abstand unabhängig von der Anzahl immer gleich bleibt. Wiederverwendbar für mehrere Kennzahlen
+// (Zimmer, Badezimmer, ...) auf unterschiedlichen Radien - siehe wohnungsKreiseErstellen. Als
+// 3D-Objekt statt HTML/CSS-Overlay, konsistent mit dem Wohnungs-Kreis selbst.
+const ZIMMER_STRICH_WINKEL_SCHRITT = THREE.MathUtils.degToRad(20); // Winkelabstand zwischen zwei Strich-Mitten
+const ZIMMER_STRICH_WINKEL_BREITE = THREE.MathUtils.degToRad(12); // "Länge" eines vollen Strichs (in Grad Bogenmass)
+const ZIMMER_STRICH_HOEHE = 1.5; // Meter - wie hoch die Strich-"Balken" aus der Grundfläche ragen, für bessere Erkennbarkeit in der gekippten 3D-Ansicht
+const ZIMMER_STRICH_DICKE = 1; // Meter - radiale Dicke der Striche. WICHTIG: eine reine Wand ohne Dicke hat aus der senkrechten Draufsicht keine Fläche (man schaut exakt auf ihre Kante) und wäre dort unsichtbar - erst die Dicke gibt ihr eine von oben sichtbare Deckfläche.
+
+// Kleiner "Balken" entlang eines Kreisbogens (Deckfläche oben bei y=ZIMMER_STRICH_HOEHE - von der
+// Draufsicht sichtbar -, plus Innen-/Aussenseite und Endkappen für die gekippte Ansicht; mehrere
+// gerade Segmente statt einer einzelnen Sehne, damit er der Kreisrundung sichtbar folgt) um
+// winkelMitte herum, mit gegebener Winkelbreite. Gibt Vertex-/Index-Arrays zurück (statt einer
+// fertigen Geometrie), damit mehrere Bögen in wohnungsStrichKonturErstellen zu EINER gemeinsamen
+// Geometrie zusammengefügt werden können.
+function bogenWandErstellen(radius, winkelMitte, winkelBreite, segmente = 12) {
+  const start = winkelMitte - winkelBreite / 2;
+  const innenRadius = radius;
+  const aussenRadius = radius + ZIMMER_STRICH_DICKE;
+
+  // Pro Winkel-Schritt 4 Punkte: innen-unten, aussen-unten, innen-oben, aussen-oben
+  const vertices = [];
+  for (let i = 0; i <= segmente; i++) {
+    const w = start + (i / segmente) * winkelBreite;
+    const cosW = Math.cos(w), sinW = Math.sin(w);
+    vertices.push(
+      innenRadius * cosW, 0, innenRadius * sinW,
+      aussenRadius * cosW, 0, aussenRadius * sinW,
+      innenRadius * cosW, ZIMMER_STRICH_HOEHE, innenRadius * sinW,
+      aussenRadius * cosW, ZIMMER_STRICH_HOEHE, aussenRadius * sinW
+    );
+  }
+
+  const indices = [];
+  for (let i = 0; i < segmente; i++) {
+    const iInnenU = i * 4, iAussenU = i * 4 + 1, iInnenO = i * 4 + 2, iAussenO = i * 4 + 3;
+    const jInnenU = iInnenU + 4, jAussenU = iAussenU + 4, jInnenO = iInnenO + 4, jAussenO = iAussenO + 4;
+
+    indices.push(iInnenO, iAussenO, jAussenO, iInnenO, jAussenO, jInnenO); // Deckfläche (von oben sichtbar)
+    indices.push(iAussenU, iAussenO, jAussenO, iAussenU, jAussenO, jAussenU); // Aussenseite
+    indices.push(iInnenU, jInnenU, jInnenO, iInnenU, jInnenO, iInnenO); // Innenseite
+  }
+  // Endkappen an beiden Enden des Bogenstücks, sonst wirkt es dort hohl/offen
+  indices.push(0, 2, 3, 0, 3, 1);
+  const letzte = segmente * 4;
+  indices.push(letzte, letzte + 1, letzte + 3, letzte, letzte + 3, letzte + 2);
+
+  return { vertices, indices };
+}
+
+function wohnungsStrichKonturErstellen(radius, anzahl) {
+  const volleStriche = Math.floor(anzahl);
+  const halberStrich = anzahl - volleStriche >= 0.5;
+  if (volleStriche === 0 && !halberStrich) return null;
+
+  const alleVertices = [];
+  const alleIndices = [];
+  const bogenHinzufuegen = (winkelMitte, winkelBreite) => {
+    const { vertices, indices } = bogenWandErstellen(radius, winkelMitte, winkelBreite);
+    const basis = alleVertices.length / 3;
+    alleVertices.push(...vertices);
+    for (const index of indices) alleIndices.push(index + basis);
+  };
+
+  for (let i = 0; i < volleStriche; i++) {
+    bogenHinzufuegen(i * ZIMMER_STRICH_WINKEL_SCHRITT, ZIMMER_STRICH_WINKEL_BREITE);
+  }
+  if (halberStrich) {
+    bogenHinzufuegen(volleStriche * ZIMMER_STRICH_WINKEL_SCHRITT, ZIMMER_STRICH_WINKEL_BREITE / 2);
+  }
+
+  const geometrie = new THREE.BufferGeometry();
+  geometrie.setAttribute("position", new THREE.Float32BufferAttribute(alleVertices, 3));
+  geometrie.setIndex(alleIndices);
+
+  // Hier können die Kreissegmente der Zimmer pro WHG und Anzahl Badezimmer angepasst werden
+  const material = new THREE.MeshBasicMaterial({
+    color: "#ffffff",
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: 0.6,
+    depthWrite: false, // verhindert, dass die Kontur trotz Transparenz die Grundriss-Linien dahinter verdeckt
+  });
+  return new THREE.Mesh(geometrie, material);
+}
+
+// Baut für jede Wohnung eines Gebäudes einen (anfangs unsichtbaren) Kreis - Zentrum/Höhe aus der
+// Bounding-Box ihrer Räume, Radius aus deren Fläche - sowie die daugehörigen Zimmer-Punkte auf
+// seinem Rand. Muss NACH dem Aufbau von gebaeude.linienObjekte aufgerufen werden, da beide dort mit
+// eingetragen werden (fürs Mitverschieben beim Neu-Packen).
+function wohnungsKreiseErstellen(gebaeude) {
+  const bboxProWohnung = {};
+  for (const zeile of gebaeude.zeilen) {
+    if (zeile.entitaet_typ !== "Raum" || !zeile.wohnungs_id) continue;
+    if (!bboxProWohnung[zeile.wohnungs_id]) {
+      bboxProWohnung[zeile.wohnungs_id] = { minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity, hoehenkote: Infinity };
+    }
+    const bbox = bboxProWohnung[zeile.wohnungs_id];
+    for (const kontur of zeile.konturen) {
+      for (const [x, z] of kontur) {
+        if (x < bbox.minX) bbox.minX = x;
+        if (x > bbox.maxX) bbox.maxX = x;
+        if (z < bbox.minZ) bbox.minZ = z;
+        if (z > bbox.maxZ) bbox.maxZ = z;
+      }
+    }
+    if (zeile.hoehenkote < bbox.hoehenkote) bbox.hoehenkote = zeile.hoehenkote;
+  }
+
+  // Positioniert eine Strich-Kontur (falls vorhanden) am Wohnungs-Mittelpunkt und trägt sie in
+  // Szene/linienObjekte/alleWohnungsKreise/alleZimmerKonturen ein - gemeinsame Schritte für Zimmer-
+  // UND Badezimmer-Kontur, siehe unten.
+  function konturRegistrieren(kontur, mitteX, mitteZ, hoehenkote) {
+    if (!kontur) return null;
+    kontur.position.set(mitteX, hoehenkote, mitteZ);
+    kontur.visible = false;
+    scene.add(kontur);
+    gebaeude.linienObjekte.push(kontur);
+    alleWohnungsKreise.push(kontur); // für die Zoom-Skalierung
+    alleZimmerKonturen.push(kontur); // für die Billboard-Rotation zur Kamera
+    return kontur;
+  }
+
+  const kreise = {};
+  const zimmerKonturen = {};
+  const badezimmerKonturen = {};
+  for (const [wohnungId, bbox] of Object.entries(bboxProWohnung)) {
+    const flaeche = gebaeude.wohnungsFlaeche[wohnungId] || 0;
+    if (flaeche <= 0) continue;
+
+    const radius = Math.sqrt((flaeche * 4) / Math.PI); // Kreisgrösse für Filter Wohnungen ändern
+    const mitteX = (bbox.minX + bbox.maxX) / 2;
+    const mitteZ = (bbox.minZ + bbox.maxZ) / 2;
+
+    const geometrie = new THREE.CircleGeometry(radius, 96);
+    const material = new THREE.MeshBasicMaterial({
+      color: "#ffffff",
+      transparent: true,
+      opacity: 0.3,
+      side: THREE.DoubleSide,
+      depthWrite: false, // verhindert Z-Fighting/Verdecken bei mehreren überlappenden Kreisen
+    });
+    const kreis = new THREE.Mesh(geometrie, material);
+    // CircleGeometry liegt lokal in der XY-Ebene (z=0) - +90° um X dreht (x,y,0) nach (x,0,y), analog
+    // schwarzplanFuellungErstellen.
+    kreis.rotation.x = Math.PI / 2;
+    kreis.position.set(mitteX, bbox.hoehenkote, mitteZ);
+    kreis.visible = false; // erst sichtbar, wenn wohnungsMarkierungAktualisieren eine passende Wohnung findet
+
+    scene.add(kreis);
+    gebaeude.linienObjekte.push(kreis); // damit gebaeudePositionSetzen ihn beim Neu-Packen mitverschiebt
+    alleWohnungsKreise.push(kreis); // für die Zoom-Skalierung, siehe wohnungsKreiseSkalierenAnKamera
+    kreise[wohnungId] = kreis;
+
+    // Zimmer-Strich-Kontur auf dem Rand DIESES Kreises (radius) - unabhängig von dessen Sichtbarkeit,
+    // siehe wohnungsMarkierungAktualisieren. null, falls die Wohnung keine (bekannte) Zimmerzahl hat.
+    const zimmerKontur = wohnungsStrichKonturErstellen(radius, gebaeude.zimmerProWohnung[wohnungId] || 0);
+    if (konturRegistrieren(zimmerKontur, mitteX, mitteZ, bbox.hoehenkote)) {
+      zimmerKonturen[wohnungId] = zimmerKontur;
+    }
+
+    // Badezimmer-Strich-Kontur auf einem ÄUSSEREN Radius (125% des Kreisrands), damit sie ausserhalb
+    // liegt und nicht mit der Zimmer-Kontur überlappt - zwei konzentrische Ringe statt einem.
+    const badezimmerKontur = wohnungsStrichKonturErstellen(radius * 1.25, gebaeude.badAnzahl[wohnungId] || 0);
+    if (konturRegistrieren(badezimmerKontur, mitteX, mitteZ, bbox.hoehenkote)) {
+      badezimmerKonturen[wohnungId] = badezimmerKontur;
+    }
+  }
+  return { kreise, zimmerKonturen, badezimmerKonturen };
 }
 
 function gebaeudeDarstellen(zeilen) {
@@ -485,6 +770,7 @@ function gebaeudeDarstellen(zeilen) {
     const zimmerProWohnung = {};
     const geschossIds = new Set();
     let gf = 0;
+    let maxHoehenkote = 0; // höchster hoehenkote-Wert im Gebäude
 
     // Pro-Wohnung-Kennzahlen (unabhängig von der SIA416-Kategorie): Gesamtfläche der Wohnung sowie
     // die Fläche ihrer Zimmerprogramm-Räume (Wohnen/Schlafen, Essen, Küche, Balkon, Reduit, Nasszelle)
@@ -506,6 +792,7 @@ function gebaeudeDarstellen(zeilen) {
 
     for (const zeile of zeilenMitPunkten) {
       geschossIds.add(zeile.geschoss_id);
+      if (zeile.hoehenkote > maxHoehenkote) maxHoehenkote = zeile.hoehenkote;
 
       if (zeile.entitaet_typ === "Raum" && zeile.definition) {
         flaechePro416Kategorie[zeile.definition] =
@@ -563,6 +850,7 @@ function gebaeudeDarstellen(zeilen) {
       zimmerProWohnung,
       geschossigkeit: geschossIds.size,
       gf,
+      maxHoehenkote,
       hnfAnteil: gf > 0 ? ((flaechePro416Kategorie["HNF"] || 0) / gf) * 100 : 0, // in Prozent, nicht als Bruch (0-1)
       wohnungenAnzahl: Object.keys(zimmerProWohnung).length,
       wohnungsFlaeche,
@@ -579,6 +867,7 @@ function gebaeudeDarstellen(zeilen) {
   }
 
   WOHNUNGEN = wohnungenAufbauen(gebaeudeListe);
+  wohnungenNachId = new Map(WOHNUNGEN.map((wohnung) => [wohnung.wohnungId, wohnung]));
 
   gebaeudePacken(gebaeudeListe);
 
@@ -613,7 +902,7 @@ function gebaeudeDarstellen(zeilen) {
       gruppe.rohZeilen.push(zeile);
 
       for (const kontur of zeile.konturen) {
-        segmenteHinzufuegen(gruppe.positionen, kontur);
+        segmenteHinzufuegen(gruppe.positionen, kontur, zeile.hoehenkote);
         // Pro hinzugefügtem Segment dieselbe Zeile vermerken (kontur.length - 1 Segmente pro Kontur)
         for (let i = 0; i < kontur.length - 1; i++) {
           gruppe.zeilen.push(zeile);
@@ -656,10 +945,22 @@ function gebaeudeDarstellen(zeilen) {
         }
       }
 
+      // Unsichtbare Klickflächen nur für Räume - macht sie in ihrer ganzen Fläche anklickbar statt
+      // nur an der Umfassungslinie, siehe raumKlickflaechenErstellen.
+      const klickflaechen = gruppe.entitaetTyp === "Raum" ? raumKlickflaechenErstellen(gruppe.rohZeilen) : [];
+      for (const mesh of klickflaechen) {
+        mesh.visible = linien.visible; // gleicher Startwert, wird ebenfalls gleich danach korrigiert
+        scene.add(mesh);
+        klickbareObjekte.push(mesh);
+        alleRaumKlickflaechen.push(mesh);
+        gebaeude.linienObjekte.push(mesh); // damit gebaeudePositionSetzen sie beim Neu-Packen mitverschiebt
+      }
+
       gebaeude.linienMaterialien.push({
         material,
         linien,
         fuellung,
+        klickflaechen,
         geschossLabel: gruppe.geschossLabel,
         entitaetTyp: gruppe.entitaetTyp,
         gefiltertSichtbar: true, // von gebaeudeDimmingAktualisieren aktuell gehalten, initial nichts gefiltert
@@ -669,6 +970,11 @@ function gebaeudeDarstellen(zeilen) {
         enthuellt: !(gruppe.entitaetTyp === "Geschossfläche" && gruppe.geschossLabel === STARTGESCHOSS_LABEL),
       });
     }
+
+    const { kreise, zimmerKonturen, badezimmerKonturen } = wohnungsKreiseErstellen(gebaeude);
+    gebaeude.wohnungsKreise = kreise;
+    gebaeude.wohnungsZimmerKontur = zimmerKonturen;
+    gebaeude.wohnungsBadezimmerKontur = badezimmerKonturen;
   }
 
   annotationenErstellen(gebaeudeListe);
@@ -873,18 +1179,13 @@ function gebaeudePositionSetzen(gebaeude, neueMitteX, neueMitteZ) {
 
 // --------------------------------------------------------------------------------
 
-// Ziel: SIA416-Donut und Zimmer-Legende sind pro Gebäude erstellt
+// Ziel: Zimmer-Legende ist pro Gebäude erstellt
 
 // --------------------------------------------------------------------------------
 
 function annotationenErstellen(gebaeudeListe) {
   for (const gebaeude of gebaeudeListe) {
-    const overlay = gebaeudeOverlayErstellen(
-      gebaeude.mitteX,
-      gebaeude.mitteZ,
-      gebaeude.flaechePro416Kategorie,
-      gebaeude.zimmerProWohnung
-    );
+    const overlay = gebaeudeOverlayErstellen(gebaeude.mitteX, gebaeude.mitteZ, gebaeude.zimmerProWohnung);
     gebaeude.overlayElement = overlay.element;
     gebaeude.overlayPosition = overlay.position; // für gebaeudePositionSetzen (Neu-Packen beim Filtern)
   }
@@ -892,7 +1193,7 @@ function annotationenErstellen(gebaeudeListe) {
 
 // --------------------------------------------------------------------------------
 
-// Ziel: Kamera ist auf die Gesamtausdehnung aller Gebäude (inkl. Donut-Ring) zentriert
+// Ziel: Kamera ist auf die Gesamtausdehnung aller Gebäude zentriert
 
 // ???: Es ist zu überprüfen ob diese Funktion noch gebraucht wird wenn wir die neue Rechteckfunktion ausführen oder ob es nicht mehr Sinn macht dies zuerst zu setzen und dann die Szene aufbauen.
 
@@ -924,37 +1225,6 @@ function kameraAufGebaeudeZentrieren(gebaeudeListe) {
 
   controls.target.set(zentrumX, 0, zentrumZ);
   controls.update();
-}
-
-// --------------------------------------------------------------------------------
-
-// Ziel: SIA416 Flächen sind als Donut um jedes Gebäude dargestellt
-
-// --------------------------------------------------------------------------------
-
-function donutErstellen(flaechePro416Kategorie) {
-  const Bruttogeschossflaeche = Object.values(flaechePro416Kategorie).reduce((summe, f) => summe + f, 0);
-  if (Bruttogeschossflaeche === 0) return null; // keine kategorisierten Räume -> kein Donut
-
-  let winkel = 0; // Startwinkel des nächsten Segments in Grad, läuft von 0 bis 360 (CSS conic-gradient)
-  const segmente = [];
-  for (const [sia416_definition, flaeche] of Object.entries(flaechePro416Kategorie)) {
-    const prozentAnteil = flaeche / Bruttogeschossflaeche;
-    const segmentWinkel = prozentAnteil * 360;
-
-    const donutFill = flaechenfarbenSia416farben[sia416_definition] || "#999999"; // Fallback, falls Kategorie keine Farbe hat
-    segmente.push(`${donutFill} ${winkel}deg ${winkel + segmentWinkel}deg`);
-
-    winkel += segmentWinkel;
-  }
-
-  const donut = document.createElement("div");
-  donut.className = "donut-overlay";
-  donut.style.width = `${donutDurchmesserPx}px`;
-  donut.style.height = `${donutDurchmesserPx}px`;
-  donut.style.background = `conic-gradient(${segmente.join(", ")})`;
-  donut.appendChild(document.createElement("div")).className = "donut-loch";
-  return donut;
 }
 
 // --------------------------------------------------------------------------------
@@ -1013,11 +1283,33 @@ function zimmerLegendeErstellen(zimmerProWohnung) {
 // --------------------------------------------------------------------------------
 
 const klickbareObjekte = [];
+const alleRaumKlickflaechen = []; // Teilmenge von klickbareObjekte (nur Raum-Meshes) - für raumSubtypMarkierungAktualisieren
 
 const raycaster = new THREE.Raycaster(); // greift die nächste Linie resp. Fläche die sich bei der Maus befindet
 raycaster.params.Line2 = { threshold: 8 }; // die Zahl ist die Tolleranz wie genau ich die Linie treffen muss
 
 const infobox = document.getElementById("infobox");
+
+// Aktuell farblich markierte Raum-Meshes (raumHighlightMaterial statt raumKlickflaecheMaterial), falls
+// gerade ein Raum ausgewählt ist - siehe Klick-Handler unten. Ein Raum kann bei unregelmässiger Form
+// aus MEHREREN getrennten Meshes bestehen (siehe raumKlickflaechenErstellen, eines pro Aussenkontur),
+// die alle dieselbe zeile in userData.zeile tragen - deshalb ein Array statt eines einzelnen Meshes,
+// sonst blieben Teile des Raums unmarkiert ("abgeschnitten").
+let ausgewaehlteRaumMeshes = [];
+
+// Rohe Zeile des zuletzt angeklickten Elements (Linie oder Raum-Klickfläche), unabhängig davon ob es
+// sich um einen Raum handelt oder nicht - für die Isolierung per Taste I (siehe dort).
+let ausgewaehlteZeile = null;
+
+// { gebaeudeId, geschossLabel } | null - geschossLabel null isoliert das ganze Gebäude (alle
+// Geschosse), gesetzt isoliert zusätzlich auf ein einzelnes Geschoss. Siehe Taste I weiter unten und
+// gebaeudeDimmingAktualisieren, wo das ausgewertet wird.
+let isolierung = null;
+
+function raumAuswahlAufheben() {
+  for (const mesh of ausgewaehlteRaumMeshes) mesh.material = raumKlickflaecheMaterial;
+  ausgewaehlteRaumMeshes = [];
+}
 
 renderer.domElement.addEventListener("click", (e) => {
   // Koordinaten relativ zur tatsächlichen Canvas-Position/-Grösse statt zum ganzen Fenster, da die
@@ -1029,15 +1321,39 @@ renderer.domElement.addEventListener("click", (e) => {
   );
 
   raycaster.setFromCamera(maus, camera);
-  const treffer = raycaster.intersectObjects(klickbareObjekte);
+  // .intersectObjects() ignoriert object.visible NICHT automatisch - durch Filter ausgeblendete
+  // (aber weiterhin in klickbareObjekte vorhandene) Linien müssen daher hier manuell rausgefiltert
+  // werden, sonst liefert ein Klick an ihrer Position trotzdem einen Treffer.
+  const treffer = raycaster.intersectObjects(klickbareObjekte.filter((objekt) => objekt.visible));
 
   if (treffer.length === 0) {
     infobox.style.display = "none";
+    raumAuswahlAufheben();
+    ausgewaehlteZeile = null;
     return;
   }
 
   const naechsterTreffer = treffer[0];
-  const zeile = naechsterTreffer.object.userData.zeilen[naechsterTreffer.faceIndex];
+  const getroffenesObjekt = naechsterTreffer.object;
+  // Linien (Line2) haben userData.zeilen (eine Zeile pro Segment-Index), die neuen unsichtbaren
+  // Raum-Klickflächen (siehe raumKlickflaechenErstellen) je ein eigenes Mesh mit userData.zeile.
+  const zeile = getroffenesObjekt.userData.zeile ?? getroffenesObjekt.userData.zeilen[naechsterTreffer.faceIndex];
+  ausgewaehlteZeile = zeile;
+
+  // Farbliche Markierung nur für Räume (eigenes Mesh, erkennbar an userData.zeile) - erneuter Klick
+  // auf denselben Raum hebt die Markierung wieder auf, Klick auf einen anderen Raum (oder eine Linie)
+  // wechselt sie. Markiert werden ALLE Meshes mit derselben zeile (siehe raumKlickflaechenErstellen -
+  // ein Raum kann bei unregelmässiger Form aus mehreren Aussenkonturen/Meshes bestehen), nicht nur das
+  // vom Raycaster getroffene, sonst blieben Teile des Raums unmarkiert.
+  if (getroffenesObjekt.userData.zeile && ausgewaehlteRaumMeshes.includes(getroffenesObjekt)) {
+    raumAuswahlAufheben();
+  } else {
+    raumAuswahlAufheben();
+    if (getroffenesObjekt.userData.zeile) {
+      ausgewaehlteRaumMeshes = klickbareObjekte.filter((objekt) => objekt.userData.zeile === zeile);
+      for (const mesh of ausgewaehlteRaumMeshes) mesh.material = raumHighlightMaterial;
+    }
+  }
 
   // hier kann ich das infofeld mit informationen gestalten
   // <strong>  = bolt </strong>
@@ -1051,6 +1367,120 @@ renderer.domElement.addEventListener("click", (e) => {
   infobox.style.left = `${e.clientX + 12}px`;
   infobox.style.top = `${e.clientY + 12}px`;
   infobox.style.display = "block";
+});
+
+// ESC schliesst die Infobox und hebt eine bestehende Raum-Markierung auf, genau wie ein Klick ins Leere.
+window.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  infobox.style.display = "none";
+  raumAuswahlAufheben();
+  ausgewaehlteZeile = null;
+});
+
+// I isoliert das zuletzt angeklickte Element (ausgewaehlteZeile, siehe Klick-Handler oben): eine
+// Geschossfläche (GF) isoliert das ganze Gebäude (alle Geschosse), jedes andere Element (Raum/
+// Öffnung/Ausstattung) zusätzlich auf dessen Geschoss. Bewusst nur bis auf Geschoss-Ebene, nicht bis
+// zur einzelnen Wohnung: deren Räume liegen in derselben Linien-Geometrie wie die der Nachbarwohnungen
+// auf demselben Geschoss (siehe gebaeudeDarstellen) und lassen sich darum nicht separat ausblenden,
+// ohne die Geometrie-Gruppierung aufzusplitten - bei diesem grossen Datensatz nicht ohne Weiteres
+// vertretbar (mehr einzelne Linien-Objekte pro Gebäude). Erneuter Tastendruck hebt die Isolierung
+// wieder auf, unabhängig von der aktuellen Auswahl.
+window.addEventListener("keydown", (e) => {
+  if (e.key.toLowerCase() !== "i") return;
+
+  if (isolierung) {
+    isolierung = null;
+  } else if (ausgewaehlteZeile) {
+    isolierung = {
+      gebaeudeId: ausgewaehlteZeile.gebaeude_id,
+      geschossLabel: ausgewaehlteZeile.entitaet_typ === "Geschossfläche" ? null : ausgewaehlteZeile.geschoss_label,
+    };
+  } else {
+    return;
+  }
+
+  const { zaehlerProGebaeude } = matchAnzahlProGebaeudeBerechnen();
+  gebaeudeDimmingAktualisieren(zaehlerProGebaeude, filterAuswahl.geschoss);
+  wohnungsMarkierungAktualisieren();
+  raumSubtypMarkierungAktualisieren();
+});
+
+// F fixiert/löst die Gebäude-Positionierung (siehe positionierungFixiert oben und ihre Nutzung in
+// filterAendern): typischer Ablauf ist erst grob mit Gebäude-/Wohnungen-Filtern eingrenzen (Gebäude
+// packen sich dabei neu, Kamera zentriert mit) und danach in die Feineinstellung (z.B. die neuen
+// Flächen-Filter) wechseln, ohne dass sich die Ansicht dabei noch verschiebt.
+window.addEventListener("keydown", (e) => {
+  if (e.key.toLowerCase() !== "f") return;
+  positionierungFixiert = !positionierungFixiert;
+  console.log(positionierungFixiert ? "Positionierung fixiert (F zum Lösen)" : "Positionierung wieder aktiv (F zum Fixieren)");
+});
+
+// R löst manuell eine Neu-Positionierung mit dem aktuell gewählten Filter aus (siehe
+// positionierungAusloesen) - funktioniert auch bei aktiver Fixierung, für ein bewusstes einmaliges
+// "Nachziehen" der Ansicht, ohne die Fixierung selbst aufzuheben.
+window.addEventListener("keydown", (e) => {
+  if (e.key.toLowerCase() !== "r") return;
+  positionierungAusloesen();
+});
+
+// 4x Supersampling: vierfache Pixel-Dichte des Bildschirms für einen Export, der auch beim Reinzoomen
+// oder Drucken noch scharf bleibt.
+const PNG_EXPORT_SKALIERUNG = 4;
+
+// P exportiert die aktuelle Ansicht als PNG. Rendert dafür kurz in höherer Auflösung (siehe
+// PNG_EXPORT_SKALIERUNG), liest das Bild aus dem Canvas und setzt danach Auflösung + Frame wieder
+// zurück - alles synchron in einem Zug, bevor der Browser überhaupt neu zeichnet, sodass der
+// hochskalierte Zwischenzustand nie sichtbar aufblitzt.
+window.addEventListener("keydown", (e) => {
+  if (e.key.toLowerCase() !== "p") return;
+
+  const breite = zeichenBreite();
+  const hoehe = zeichenHoehe();
+
+  // Auf Retina-Displays (devicePixelRatio 2) kann PNG_EXPORT_SKALIERUNG 4 eine Canvas-Auflösung
+  // anfordern, die grösser ist als die maximale Textur-/Viewport-Grösse der GPU - der Browser schneidet
+  // die Zeichnung dann kommentarlos am Rand ab, statt einen Fehler zu werfen. Deshalb hier auf das
+  // tatsächlich unterstützte Maximum begrenzen, statt den vollen Faktor blind anzuwenden.
+  const gl = renderer.getContext();
+  const maxAufloesung = Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE), ...gl.getParameter(gl.MAX_VIEWPORT_DIMS));
+  const skalierung = Math.min(
+    PNG_EXPORT_SKALIERUNG,
+    maxAufloesung / (breite * window.devicePixelRatio),
+    maxAufloesung / (hoehe * window.devicePixelRatio)
+  );
+  if (skalierung < PNG_EXPORT_SKALIERUNG) {
+    console.warn(`PNG-Export: Auflösung auf ${skalierung.toFixed(2)}x begrenzt (GPU-Maximum erreicht, sonst wäre die Zeichnung am Rand abgeschnitten).`);
+  }
+
+  renderer.setPixelRatio(window.devicePixelRatio * skalierung);
+  renderer.setSize(breite, hoehe, false); // false: CSS-Grösse auf dem Bildschirm bleibt unverändert, nur die interne Auflösung steigt
+  linienMaterialAufloesungenAktualisieren();
+  renderer.render(scene, camera);
+
+  const link = document.createElement("a");
+  link.href = renderer.domElement.toDataURL("image/png");
+  const zeitstempel = new Date().toISOString().slice(0, 19).replace("T", "_").replace(/:/g, "-");
+  link.download = `floorplanexploratory_${zeitstempel}.png`;
+  link.click();
+
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(breite, hoehe, false);
+  linienMaterialAufloesungenAktualisieren();
+  renderer.render(scene, camera);
+});
+
+// Cursor zeigt "pointer" statt des normalen Pfeils, sobald die Maus über einer klickbaren (und
+// sichtbaren) Linie schwebt - gleiche Raycasting-Logik wie beim Klick oben, nur ohne Infobox-Effekt.
+renderer.domElement.addEventListener("pointermove", (e) => {
+  const rect = renderer.domElement.getBoundingClientRect();
+  const maus = new THREE.Vector2(
+    ((e.clientX - rect.left) / rect.width) * 2 - 1,
+    -((e.clientY - rect.top) / rect.height) * 2 + 1
+  );
+
+  raycaster.setFromCamera(maus, camera);
+  const treffer = raycaster.intersectObjects(klickbareObjekte.filter((objekt) => objekt.visible));
+  renderer.domElement.style.cursor = treffer.length > 0 ? "pointer" : "default";
 });
 
 // --------------------------------------------------------------------------------
@@ -1101,23 +1531,30 @@ function linienSichtbarkeitAnwenden(gruppe) {
   if (gruppe.entitaetTyp !== "Geschossfläche") {
     // Raum/Öffnung/Ausstattung: unverändert nur abhängig von Filter + Zoomstufe, alle Geschosse gleich.
     gruppe.linien.visible = gruppe.gefiltertSichtbar && detailSichtbar;
+    // Klickflächen (nur bei Raum vorhanden, siehe raumKlickflaechenErstellen) folgen derselben
+    // Sichtbarkeit wie die Umfassungslinie - ein Raum ist genau dann anklickbar, wenn er auch gezeichnet wird.
+    for (const mesh of gruppe.klickflaechen) mesh.visible = gruppe.linien.visible;
     return;
   }
 
   // Geschossfläche: ohne aktiven Geschoss-Filter nur STARTGESCHOSS_LABEL zeigen (andere Geschosse
   // bleiben leer, bis reingezoomt wird). Ist ein Geschoss-Filter aktiv, übernimmt stattdessen
   // gefiltertSichtbar (siehe gebaeudeDimmingAktualisieren) die Auswahl - der Nutzer sieht dann genau
-  // die gefilterten Geschosse, nicht zwingend das Startgeschoss.
+  // die gefilterten Geschosse, nicht zwingend das Startgeschoss. Gekippte Kamera (kameraGeschwenkt)
+  // schaltet ebenfalls auf "alle Geschosse" um, für den gestapelten 3D-Blick.
   const geschossFilterAktiv = filterAuswahl.geschoss.size > 0;
-  const geschossBasisSichtbar = geschossFilterAktiv || gruppe.geschossLabel === STARTGESCHOSS_LABEL;
+  const geschossBasisSichtbar = geschossFilterAktiv || gruppe.geschossLabel === STARTGESCHOSS_LABEL || kameraGeschwenkt;
   // gruppe.enthuellt gated den Akt-2-Reveal (siehe enthuellungStarten): bis ein Gebäude "an der Reihe"
   // ist, bleibt es unsichtbar, auch wenn Filter/Zoom es sonst zeigen würden.
   gruppe.linien.visible = gruppe.gefiltertSichtbar && gruppe.enthuellt && (geschossBasisSichtbar || detailSichtbar);
 
   // Schwarzplan-Füllung: wie die Geschossfläche-Linie selbst, aber nur solange NICHT reingezoomt ist -
-  // sobald die Detailschwelle erreicht ist, verschwindet die Füllung wieder.
+  // sobald die Detailschwelle erreicht ist, verschwindet die Füllung wieder. Ausnahme: bei gekippter
+  // Kamera bleibt sie auch beim Reinzoomen sichtbar, da sich Geschosse dank hoehenkote räumlich nicht
+  // mehr überlagern.
   if (gruppe.fuellung) {
-    gruppe.fuellung.visible = gruppe.gefiltertSichtbar && gruppe.enthuellt && geschossBasisSichtbar && !detailSichtbar;
+    gruppe.fuellung.visible = gruppe.gefiltertSichtbar && gruppe.enthuellt && geschossBasisSichtbar && (!detailSichtbar || kameraGeschwenkt);
+    fuellungMaterialSetzen(gruppe.fuellung, kameraGeschwenkt ? gestapelteFuellungMaterial : schwarzplanMaterial);
   }
 }
 
@@ -1126,10 +1563,14 @@ function gebaeudeDimmingAktualisieren(matchAnzahlProGebaeude, ausgewaehlteGescho
 
   for (const [gebaeude_id, gebaeude] of gebaeudeNachId) {
     // kein Wohngebäude -> nie wegen Wohnungs-Filtern ausblenden, Geschoss-Filter gilt aber trotzdem
-    const dimmenGebaeude = gebaeude.wohnungenAnzahl === 0 ? false : !(matchAnzahlProGebaeude.get(gebaeude_id) > 0);
+    const ausserhalbIsolierung = isolierung !== null && gebaeude_id !== isolierung.gebaeudeId;
+    const dimmenGebaeude =
+      ausserhalbIsolierung || (gebaeude.wohnungenAnzahl === 0 ? false : !(matchAnzahlProGebaeude.get(gebaeude_id) > 0));
 
     for (const gruppe of gebaeude.linienMaterialien) {
-      const dimmenGeschoss = geschossFilterAktiv && !ausgewaehlteGeschosse.has(gruppe.geschossLabel);
+      const dimmenGeschoss =
+        (geschossFilterAktiv && !ausgewaehlteGeschosse.has(gruppe.geschossLabel)) ||
+        (isolierung?.geschossLabel != null && gruppe.geschossLabel !== isolierung.geschossLabel);
       const dimmen = dimmenGebaeude || dimmenGeschoss;
       gruppe.material.opacity = dimmen ? 0 : 1;
       gruppe.gefiltertSichtbar = !dimmen;
@@ -1138,6 +1579,46 @@ function gebaeudeDimmingAktualisieren(matchAnzahlProGebaeude, ausgewaehlteGescho
 
     if (gebaeude.wohnungenAnzahl > 0) {
       gebaeude.overlayElement.style.display = dimmenGebaeude ? "none" : "";
+    }
+  }
+}
+
+// Ziel: Bei aktivem Wohnungsgrösse-Filter werden die dazu passenden Wohnungen mit einem farbigen Kreis
+// markiert (Fläche, siehe wohnungsKreiseErstellen), bei aktivem Zimmer- bzw. Badezimmer-Filter mit
+// einer Strich-Kontur auf dessen Rand bzw. einem inneren Ring (siehe wohnungsStrichKonturErstellen) -
+// alle unabhängig voneinander sichtbar, andere Wohnungen-/Zimmer-Filter (Küchengrösse etc.) bekommen
+// später eigene Überlagerungen und lösen HIER bewusst nichts aus. Gebäude-Dimming allein zeigt nur,
+// dass IRGENDEINE Wohnung im Gebäude passt, nicht WELCHE.
+function wohnungsMarkierungAktualisieren() {
+  const flaecheAktiv = filterAuswahl.wohnungsgroesse.size > 0;
+  const flaecheFarbe = flaecheAktiv ? cssFarbeAufloesen(DIMENSIONEN.wohnungsgroesse.colorOf()) : null;
+
+  const zimmerAktiv = filterAuswahl.zimmer.size > 0;
+  const zimmerFarbe = zimmerAktiv ? cssFarbeAufloesen(DIMENSIONEN.zimmer.colorOf()) : null;
+
+  const badAktiv = filterAuswahl.anzahlBadezimmer.size > 0;
+  const badFarbe = badAktiv ? cssFarbeAufloesen(DIMENSIONEN.anzahlBadezimmer.colorOf()) : null;
+
+  for (const wohnung of WOHNUNGEN) {
+    const gebaeude = gebaeudeNachId.get(wohnung.gebaeudeId);
+    const passt = wohnungPasstZuFiltern(wohnung, null) && wohnungPasstZuIsolierung(wohnung);
+
+    const kreis = gebaeude.wohnungsKreise[wohnung.wohnungId];
+    if (kreis) {
+      kreis.visible = flaecheAktiv && passt;
+      if (kreis.visible) kreis.material.color.copy(flaecheFarbe);
+    }
+
+    const kontur = gebaeude.wohnungsZimmerKontur[wohnung.wohnungId];
+    if (kontur) {
+      kontur.visible = zimmerAktiv && passt;
+      if (kontur.visible) kontur.material.color.copy(zimmerFarbe);
+    }
+
+    const badKontur = gebaeude.wohnungsBadezimmerKontur[wohnung.wohnungId];
+    if (badKontur) {
+      badKontur.visible = badAktiv && passt;
+      if (badKontur.visible) badKontur.material.color.copy(badFarbe);
     }
   }
 }
@@ -1209,7 +1690,67 @@ const BALKON_SUBTYPEN = new Set(["Balkon", "Aussenraum", "Loggia", "Terrasse", "
 const REDUIT_SUBTYPEN = new Set(["Abstellraum"]);
 const NASSZELLE_SUBTYPEN = new Set(["Badezimmer", "Toilette", "Dusche"]);
 
+// Ziel: Bei aktivem Zimmer-Gruppen-Filter (Küchengrösse, Esszimmergrösse, ...) werden die dazu
+// passenden Räume in ihrer TATSÄCHLICHEN Form eingefärbt (nutzt dieselben Klickflächen-Meshes wie
+// raumKlickflaechenErstellen/der Klick-Highlight, siehe alleRaumKlickflaechen), statt einer
+// abstrakten Form wie beim Wohnungs-Kreis - Räume sind grösstenteils rechteckig, ihre eigene Form
+// zeigt Lage/Grösse besser. "Wohn-/Esszimmer" gehört bewusst zu zwei Dimensionen gleichzeitig
+// (Wohnen/Schlafen UND Essen), daher hier eine Liste pro Subtyp statt nur einer Dimension.
+const ZIMMER_SUBTYP_ZU_DIMENSIONEN = {};
+for (const [dim, subtypen] of [
+  ["kuechengroesse", KUECHE_SUBTYPEN],
+  ["esszimmergroesse", ESSEN_SUBTYPEN],
+  ["wohnenSchlafenGroesse", WOHNEN_SCHLAFEN_SUBTYPEN],
+  ["balkongroesse", BALKON_SUBTYPEN],
+  ["reduitgroesse", REDUIT_SUBTYPEN],
+  ["nasszellengroesse", NASSZELLE_SUBTYPEN],
+]) {
+  for (const subtyp of subtypen) {
+    if (!ZIMMER_SUBTYP_ZU_DIMENSIONEN[subtyp]) ZIMMER_SUBTYP_ZU_DIMENSIONEN[subtyp] = [];
+    ZIMMER_SUBTYP_ZU_DIMENSIONEN[subtyp].push(dim);
+  }
+}
+
+// Ein gemeinsames Material pro Dimension (nicht pro Raum) - Farbe wird bei jedem Filterwechsel
+// aktualisiert, siehe raumSubtypMarkierungAktualisieren.
+const ZIMMER_SUBTYP_MATERIALIEN = {};
+for (const dim of ["kuechengroesse", "esszimmergroesse", "wohnenSchlafenGroesse", "balkongroesse", "reduitgroesse", "nasszellengroesse"]) {
+  ZIMMER_SUBTYP_MATERIALIEN[dim] = new THREE.MeshBasicMaterial({
+    color: "#ffffff",
+    transparent: true,
+    opacity: 0.45,
+    side: THREE.DoubleSide,
+    depthWrite: false, // verhindert, dass die Einfärbung andere Raum-Elemente dahinter verdeckt
+  });
+}
+
+function raumSubtypMarkierungAktualisieren() {
+  for (const dim in ZIMMER_SUBTYP_MATERIALIEN) {
+    if (filterAuswahl[dim].size > 0) {
+      ZIMMER_SUBTYP_MATERIALIEN[dim].color.copy(cssFarbeAufloesen(DIMENSIONEN[dim].colorOf()));
+    }
+  }
+
+  for (const mesh of alleRaumKlickflaechen) {
+    if (ausgewaehlteRaumMeshes.includes(mesh)) continue; // Klick-Auswahl (rot) hat Vorrang, hier nicht anfassen
+
+    const zeile = mesh.userData.zeile;
+    const moeglicheDims = ZIMMER_SUBTYP_ZU_DIMENSIONEN[zeile.entitaet_subtyp];
+    const aktiveDim = moeglicheDims && moeglicheDims.find((dim) => filterAuswahl[dim].size > 0);
+
+    if (!aktiveDim) {
+      mesh.material = raumKlickflaecheMaterial;
+      continue;
+    }
+    const wohnung = wohnungenNachId.get(zeile.wohnungs_id);
+    mesh.material = wohnung && wohnungPasstZuFiltern(wohnung, null) && wohnungPasstZuIsolierung(wohnung)
+      ? ZIMMER_SUBTYP_MATERIALIEN[aktiveDim]
+      : raumKlickflaecheMaterial;
+  }
+}
+
 let WOHNUNGEN = [];
+let wohnungenNachId = new Map(); // wohnungId -> Wohnung, für raumSubtypMarkierungAktualisieren
 let gebaeudeNachId = new Map();
 
 function wohnungenAufbauen(gebaeudeListe) {
@@ -1298,6 +1839,22 @@ function binIndexVon(wert, bins) {
   return bins.findIndex((bin) => wert <= bin.max);
 }
 
+// Baut eine Dimension, deren Werte über binIndexVon() in dieselben BINS einsortiert werden.
+// feldZugriff liefert entweder einen einzelnen Wert (z.B. w.gf) oder ein Array von Werten
+// (z.B. w.esszimmergroessen, wenn eine Wohnung mehrere Esszimmer hat).
+function binDimension(feldZugriff, bins, seriesName, extra = {}) {
+  return {
+    keysOf: (w) => {
+      const wert = feldZugriff(w);
+      return Array.isArray(wert) ? wert.map((v) => binIndexVon(v, bins)) : [binIndexVon(wert, bins)];
+    },
+    keys: bins.map((_, i) => i),
+    labelOf: (i) => bins[i].label,
+    colorOf: () => `var(--series-${seriesName})`,
+    ...extra,
+  };
+}
+
 function dimensionenAufbauen(wohnungen) {
   // Rohe Labels ("0100 | EG") statt Sprungmass-Bins, da Geschosse eine feste, in den Daten selbst
   // schon durchnummerierte Kategorie sind (kein Wert dazwischen möglich) - die Zahl am Anfang sorgt
@@ -1310,106 +1867,23 @@ function dimensionenAufbauen(wohnungen) {
       keys: geschossWerte,
       labelOf: (label) => label.split("|")[1]?.trim() ?? label,
       colorOf: () => "var(--series-geschoss)",
-      // Geschosse haben eine natürliche unten-nach-oben-Reihenfolge wie ein Gebäudeschnitt -> Balken
-      // laufen horizontal, Kategorien von unten (erster Key) nach oben gestapelt statt links-rechts.
       vertikaleKategorien: true,
     },
-    wohnungen: {
-      keysOf: (w) => [binIndexVon(w.wohnungenProGebaeude, WOHNUNGEN_PRO_GEBAEUDE_BINS)],
-      keys: WOHNUNGEN_PRO_GEBAEUDE_BINS.map((_, i) => i),
-      labelOf: (i) => WOHNUNGEN_PRO_GEBAEUDE_BINS[i].label,
-      colorOf: () => "var(--series-wohnungen)",
-      zaehlEinheit: "gebaeude",
-    },
-    zimmer: {
-      keysOf: (w) => [binIndexVon(w.zimmer, ZIMMER_BINS)],
-      keys: ZIMMER_BINS.map((_, i) => i),
-      labelOf: (i) => ZIMMER_BINS[i].label,
-      colorOf: () => "var(--series-zimmer)",
-    },
-    gf: {
-      keysOf: (w) => [binIndexVon(w.gf, GF_BINS)],
-      keys: GF_BINS.map((_, i) => i),
-      labelOf: (i) => GF_BINS[i].label,
-      colorOf: () => "var(--series-gf)",
-      zaehlEinheit: "gebaeude",
-    },
-    hnfAnteil: {
-      keysOf: (w) => [binIndexVon(w.hnfAnteil, HNF_ANTEIL_BINS)],
-      keys: HNF_ANTEIL_BINS.map((_, i) => i),
-      labelOf: (i) => HNF_ANTEIL_BINS[i].label,
-      colorOf: () => "var(--series-hnf-anteil)",
-      zaehlEinheit: "gebaeude",
-    },
-    gebaeudetiefe: {
-      keysOf: (w) => [binIndexVon(w.gebaeudetiefe, GEBAEUDETIEFE_BINS)],
-      keys: GEBAEUDETIEFE_BINS.map((_, i) => i),
-      labelOf: (i) => GEBAEUDETIEFE_BINS[i].label,
-      colorOf: () => "var(--series-gebaeudetiefe)",
-      zaehlEinheit: "gebaeude",
-    },
-    geschossigkeit: {
-      keysOf: (w) => [binIndexVon(w.geschossigkeit, GESCHOSSIGKEIT_BINS)],
-      keys: GESCHOSSIGKEIT_BINS.map((_, i) => i),
-      labelOf: (i) => GESCHOSSIGKEIT_BINS[i].label,
-      colorOf: () => "var(--series-geschossigkeit)",
-      zaehlEinheit: "gebaeude",
-    },
-    wohnungsgroesse: {
-      keysOf: (w) => [binIndexVon(w.wohnungsgroesse, WOHNUNGSGROESSE_BINS)],
-      keys: WOHNUNGSGROESSE_BINS.map((_, i) => i),
-      labelOf: (i) => WOHNUNGSGROESSE_BINS[i].label,
-      colorOf: () => "var(--series-wohnungsgroesse)",
-    },
-    wohnenSchlafenGroesse: {
-      keysOf: (w) => w.wohnenSchlafenGroessen.map((flaeche) => binIndexVon(flaeche, WOHNEN_SCHLAFEN_BINS)),
-      keys: WOHNEN_SCHLAFEN_BINS.map((_, i) => i),
-      labelOf: (i) => WOHNEN_SCHLAFEN_BINS[i].label,
-      colorOf: () => "var(--series-wohnen-schlafen-groesse)",
-    },
-    esszimmergroesse: {
-      keysOf: (w) => w.esszimmergroessen.map((flaeche) => binIndexVon(flaeche, ESSZIMMERGROESSE_BINS)),
-      keys: ESSZIMMERGROESSE_BINS.map((_, i) => i),
-      labelOf: (i) => ESSZIMMERGROESSE_BINS[i].label,
-      colorOf: () => "var(--series-esszimmergroesse)",
-    },
-    kuechengroesse: {
-      keysOf: (w) => [binIndexVon(w.kuechengroesse, KUECHENGROESSE_BINS)],
-      keys: KUECHENGROESSE_BINS.map((_, i) => i),
-      labelOf: (i) => KUECHENGROESSE_BINS[i].label,
-      colorOf: () => "var(--series-kuechengroesse)",
-    },
-    balkongroesse: {
-      keysOf: (w) => [binIndexVon(w.balkongroesse, BALKONGROESSE_BINS)],
-      keys: BALKONGROESSE_BINS.map((_, i) => i),
-      labelOf: (i) => BALKONGROESSE_BINS[i].label,
-      colorOf: () => "var(--series-balkongroesse)",
-    },
-    reduitgroesse: {
-      keysOf: (w) => [binIndexVon(w.reduitgroesse, REDUITGROESSE_BINS)],
-      keys: REDUITGROESSE_BINS.map((_, i) => i),
-      labelOf: (i) => REDUITGROESSE_BINS[i].label,
-      colorOf: () => "var(--series-reduitgroesse)",
-    },
-    nasszellengroesse: {
-      keysOf: (w) => [binIndexVon(w.nasszellengroesse, NASSZELLENGROESSE_BINS)],
-      keys: NASSZELLENGROESSE_BINS.map((_, i) => i),
-      labelOf: (i) => NASSZELLENGROESSE_BINS[i].label,
-      colorOf: () => "var(--series-nasszellengroesse)",
-    },
-    anzahlBadezimmer: {
-      keysOf: (w) => [binIndexVon(w.anzahlBadezimmer, ANZAHL_BADEZIMMER_BINS)],
-      keys: ANZAHL_BADEZIMMER_BINS.map((_, i) => i),
-      labelOf: (i) => ANZAHL_BADEZIMMER_BINS[i].label,
-      colorOf: () => "var(--series-anzahl-badezimmer)",
-    },
-    anzahlWohnungenProGeschoss: {
-      keysOf: (w) => [binIndexVon(w.anzahlWohnungenProGeschoss, WOHNUNGEN_PRO_GESCHOSS_BINS)],
-      keys: WOHNUNGEN_PRO_GESCHOSS_BINS.map((_, i) => i),
-      labelOf: (i) => WOHNUNGEN_PRO_GESCHOSS_BINS[i].label,
-      colorOf: () => "var(--series-anzahl-wohnungen-pro-geschoss)",
-      zaehlEinheit: "gebaeude",
-    },
+    wohnungen: binDimension((w) => w.wohnungenProGebaeude, WOHNUNGEN_PRO_GEBAEUDE_BINS, "wohnungen", { zaehlEinheit: "gebaeude" }),
+    zimmer: binDimension((w) => w.zimmer, ZIMMER_BINS, "zimmer"),
+    gf: binDimension((w) => w.gf, GF_BINS, "gf", { zaehlEinheit: "gebaeude" }),
+    hnfAnteil: binDimension((w) => w.hnfAnteil, HNF_ANTEIL_BINS, "hnf-anteil", { zaehlEinheit: "gebaeude" }),
+    gebaeudetiefe: binDimension((w) => w.gebaeudetiefe, GEBAEUDETIEFE_BINS, "gebaeudetiefe", { zaehlEinheit: "gebaeude" }),
+    geschossigkeit: binDimension((w) => w.geschossigkeit, GESCHOSSIGKEIT_BINS, "geschossigkeit", { zaehlEinheit: "gebaeude" }),
+    wohnungsgroesse: binDimension((w) => w.wohnungsgroesse, WOHNUNGSGROESSE_BINS, "wohnungsgroesse"),
+    wohnenSchlafenGroesse: binDimension((w) => w.wohnenSchlafenGroessen, WOHNEN_SCHLAFEN_BINS, "wohnen-schlafen-groesse"),
+    esszimmergroesse: binDimension((w) => w.esszimmergroessen, ESSZIMMERGROESSE_BINS, "esszimmergroesse"),
+    kuechengroesse: binDimension((w) => w.kuechengroesse, KUECHENGROESSE_BINS, "kuechengroesse"),
+    balkongroesse: binDimension((w) => w.balkongroesse, BALKONGROESSE_BINS, "balkongroesse"),
+    reduitgroesse: binDimension((w) => w.reduitgroesse, REDUITGROESSE_BINS, "reduitgroesse"),
+    nasszellengroesse: binDimension((w) => w.nasszellengroesse, NASSZELLENGROESSE_BINS, "nasszellengroesse"),
+    anzahlBadezimmer: binDimension((w) => w.anzahlBadezimmer, ANZAHL_BADEZIMMER_BINS, "anzahl-badezimmer"),
+    anzahlWohnungenProGeschoss: binDimension((w) => w.anzahlWohnungenProGeschoss, WOHNUNGEN_PRO_GESCHOSS_BINS, "anzahl-wohnungen-pro-geschoss", { zaehlEinheit: "gebaeude" }),
   };
 }
 
@@ -1445,6 +1919,18 @@ function wohnungPasstZuFiltern(wohnung, ausschlussDim) {
     if (!DIMENSIONEN[dim].keysOf(wohnung).some((k) => auswahl.has(k))) return false;
   }
   return true;
+}
+
+// Ergänzt wohnungPasstZuFiltern() um die aktuelle Isolierung (Taste I, siehe dort) - bewusst eine
+// eigene, separate Funktion statt in wohnungPasstZuFiltern() selbst eingebaut: dort würde sie auch die
+// Filter-Balkendiagramme und das Neu-Packen beeinflussen, was für die Isolierung nicht gewollt ist.
+// Nur für die Zusatzmarkierungen genutzt (wohnungsMarkierungAktualisieren,
+// raumSubtypMarkierungAktualisieren), die sonst auch in isolierten (ausgeblendeten) Gebäuden/Geschossen
+// weiterhin sichtbar blieben, da deren Meshes unabhängig von den Umfassungslinien in der Szene liegen.
+function wohnungPasstZuIsolierung(wohnung) {
+  if (!isolierung) return true;
+  if (wohnung.gebaeudeId !== isolierung.gebaeudeId) return false;
+  return isolierung.geschossLabel == null || wohnung.geschoss === isolierung.geschossLabel;
 }
 
 // Gebäude-Dimensionen (z.B. Geschossfläche, Geschossigkeit) sind pro Gebäude konstant, aber jede
@@ -1491,11 +1977,11 @@ function zaehleAlleUnfiltered(dim) {
   return zaehler;
 }
 
-function matchAnzahlProGebaeudeBerechnen() {
+function matchAnzahlProGebaeudeBerechnen(ausschlussDim = null) {
   const zaehlerProGebaeude = new Map();
   let gesamt = 0;
   for (const wohnung of WOHNUNGEN) {
-    if (!wohnungPasstZuFiltern(wohnung, null)) continue;
+    if (!wohnungPasstZuFiltern(wohnung, ausschlussDim)) continue;
     gesamt++;
     zaehlerProGebaeude.set(wohnung.gebaeudeId, (zaehlerProGebaeude.get(wohnung.gebaeudeId) || 0) + 1);
   }
@@ -1516,15 +2002,34 @@ function filterKopfzeileAktualisieren(gesamt, gebaeudeGefiltertAnzahl) {
   return irgendeinFilterAktiv;
 }
 
+// Neu-Packen + Kamera-Zentrierung mit dem aktuell gewählten Filter - ausgelagert, damit sie sowohl
+// automatisch aus filterAendern() (falls nicht fixiert) als auch manuell per Taste R (siehe Handler
+// weiter unten, funktioniert auch bei aktiver Fixierung für ein bewusstes einmaliges "Nachziehen")
+// ausgelöst werden kann. Geschoss bleibt aussen vor (siehe zaehlerOhneGeschoss), der ändert nur die
+// Sichtbarkeit einzelner Geschosse INNERHALB eines Gebäudes, siehe gebaeudeDimmingAktualisieren.
+function positionierungAusloesen() {
+  const { zaehlerProGebaeude: zaehlerOhneGeschoss } = matchAnzahlProGebaeudeBerechnen("geschoss");
+  const positionierungAktiv = Object.entries(filterAuswahl).some(
+    ([dim, auswahl]) => dim !== "geschoss" && auswahl.size > 0
+  );
+  gebaeudePositionenAktualisieren(zaehlerOhneGeschoss, positionierungAktiv);
+}
+
 function filterAendern() {
   for (const dim in DIMENSIONEN) diagrammRendern(dim);
-  filterTabIndikatorenAktualisieren();
 
   const { zaehlerProGebaeude, gesamt } = matchAnzahlProGebaeudeBerechnen();
-  const filterAktiv = filterKopfzeileAktualisieren(gesamt, zaehlerProGebaeude.size);
+  filterKopfzeileAktualisieren(gesamt, zaehlerProGebaeude.size);
 
   gebaeudeDimmingAktualisieren(zaehlerProGebaeude, filterAuswahl.geschoss);
-  gebaeudePositionenAktualisieren(zaehlerProGebaeude, filterAktiv);
+  wohnungsMarkierungAktualisieren();
+  raumSubtypMarkierungAktualisieren();
+
+  // AUSSER positionierungFixiert ist aktiv (Taste F, siehe Handler): dann bewusst gar nichts mehr
+  // anfassen, damit die Ansicht in der Feineinstellung stabil bleibt.
+  if (!positionierungFixiert) {
+    positionierungAusloesen();
+  }
 }
 
 function filterZuruecksetzen() {
@@ -1628,11 +2133,20 @@ function filterDiagrammInteraktionInitialisieren(dim) {
     filterTooltipAnzeigen(evt, zaehler.get(key) || 0, GESAMT_ZAEHLER[dim].get(key) || 0, DIMENSIONEN[dim].labelOf(key));
   });
 
-  svg.addEventListener("pointerup", () => {
+  svg.addEventListener("pointerup", (evt) => {
     if (state.dragging && !state.moved) {
       const key = keys[state.startIndex];
-      const nurDieseAusgewaehlt = filterAuswahl[dim].size === 1 && filterAuswahl[dim].has(key);
-      filterAuswahl[dim] = nurDieseAusgewaehlt ? new Set() : new Set([key]);
+      if (evt.altKey) {
+        // Option/Alt+Klick schaltet nur diesen einen Wert zur bestehenden Auswahl dazu/weg, statt sie
+        // zu ersetzen - damit lassen sich auch nicht zusammenhängende Werte gemeinsam auswählen.
+        const auswahl = new Set(filterAuswahl[dim]);
+        if (auswahl.has(key)) auswahl.delete(key);
+        else auswahl.add(key);
+        filterAuswahl[dim] = auswahl;
+      } else {
+        const nurDieseAusgewaehlt = filterAuswahl[dim].size === 1 && filterAuswahl[dim].has(key);
+        filterAuswahl[dim] = nurDieseAusgewaehlt ? new Set() : new Set([key]);
+      }
       filterAendern();
     }
     state.dragging = false;
@@ -1709,16 +2223,6 @@ function vertikalesDiagrammRendern(dim, svg, keys, labelOf, colorOf, gefiltertZa
     }
 
     svg.appendChild(gruppe);
-
-    const text = filterSvgEl("text", {
-      x: FILTER_PAD_VERTIKAL.left - 6,
-      y: y + barH / 2,
-      "text-anchor": "end",
-      "dominant-baseline": "middle",
-      class: "bar-label",
-    });
-    text.textContent = labelOf(key);
-    svg.appendChild(text);
   });
 
   svg.appendChild(
@@ -1801,18 +2305,6 @@ function diagrammRendern(dim) {
     }
 
     svg.appendChild(gruppe);
-
-    const text = filterSvgEl("text", {
-      x: x + barW / 2,
-      y: FILTER_CHART_H - FILTER_PAD.bottom + 14,
-      "text-anchor": keys.length > 6 ? "end" : "middle",
-      class: "bar-label",
-      ...(keys.length > 6 && {
-        transform: `rotate(-45 ${x + barW / 2} ${FILTER_CHART_H - FILTER_PAD.bottom + 10})`,
-      }),
-    });
-    text.textContent = labelOf(key);
-    svg.appendChild(text);
   });
 
   svg.appendChild(

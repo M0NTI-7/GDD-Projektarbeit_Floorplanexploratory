@@ -18,14 +18,15 @@
       color: #2C2A25;
     }
 
-    /* Papier-Hintergrund liegt jetzt auf der Seite, da der Canvas transparent ist */
     canvas {
       display: block;
       position: fixed;
       top: var(--oberer-rand);
       left: 0;
-      z-index: 1;
+      z-index: 1; /* z-index ist auf welcher Ebene as Element dargestellt wird. Wie z.B. Ebene in den Vordergrund/Hintergrund legen */
     }
+
+    /* Hier wird die Infobox des Canvases definiert. */
 
     #infobox {
       display: none;
@@ -33,45 +34,23 @@
       z-index: 10;
       background: #ffffff;
       border: 1px solid #2C2A25;
-      border-radius: 6px;
+      border-radius: 3px;
       padding: 8px 12px;
       font-family: 'Jost', sans-serif;
       font-size: 13px;
       line-height: 1.5;
       pointer-events: none;
-      /* Klicks sollen "durch" die Box zur Szene durchgehen */
     }
 
     /* Ein .gebaeude-overlay pro Gebäude wird per JS auf die projizierte Bildschirmposition der
-       Gebäudemitte gesetzt. Donut und Zimmer-Legende sind darin per CSS (in Pixeln statt Metern)
-       positioniert, damit sie zueinander garantiert konsistent bleiben, unabhängig vom Kamera-Zoom. */
+       Gebäudemitte gesetzt. Die Zimmer-Legende ist darin per CSS (in Pixeln statt Metern)
+       positioniert, damit sie unabhängig vom Kamera-Zoom konsistent bleibt. */
 
     .gebaeude-overlay {
       position: fixed;
       z-index: 0;
-      /* explizit kleiner als canvas (z-index: 1) -> Donut + Zimmer-Legende bleiben hinter den Grundriss-Linien */
+      /* explizit kleiner als canvas (z-index: 1) -> Zimmer-Legende bleibt hinter den Grundriss-Linien */
       pointer-events: none;
-    }
-
-    .donut-overlay {
-      position: absolute;
-      top: 0;
-      left: 0;
-      border-radius: 50%;
-      transform: translate(-50%, -50%);
-      /* zentriert auf der Gebäudemitte */
-    }
-
-    .donut-loch {
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      width: 60%;
-      height: 60%;
-      background: #ffffff;
-      /* deckt die Mitte ab, ergibt den Donut-Look */
-      border-radius: 50%;
-      transform: translate(-50%, -50%);
     }
 
     .zimmer-legende {
@@ -79,7 +58,7 @@
       top: 0;
       left: 0;
       transform: translate(-50%, 38px);
-      /* 38px = halber Donut-Durchmesser (30px) + Lücke (8px) */
+      /* 38px Abstand zur Gebäudemitte nach unten (ehemals: halber Donut-Durchmesser + Lücke) */
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -111,12 +90,10 @@
     }
 
     :root {
-      /* Fixer Platz oben für die Filterleiste (siehe #filter-leiste) - main.js misst die tatsächliche
-         Höhe der Leiste per ResizeObserver und überschreibt diesen Wert; er dient nur als Fallback für
-         den allerersten Seitenaufbau (versteckt hinter #splash, daher unkritisch). */
+      --header-hoehe: 100px;
       --oberer-rand: 210px;
       --border: #cfc8b8;
-      --series-geschoss: #b8860b;
+      --series-geschoss: #2C2A25;
       --series-wohnungen: #34495e;
       --series-zimmer: #8e44ad;
       --series-gf: #16a085;
@@ -186,8 +163,9 @@
       left: 0;
       right: 0;
       z-index: 20;
+      height: var(--header-hoehe);
       display: flex;
-      align-items: flex-start;
+      align-items: stretch;
       box-sizing: border-box;
       padding: 0 16px;
       background: #E2DDD2;
@@ -210,39 +188,57 @@
       border-right: 1px solid var(--border);
     }
 
+    .filter-slot:last-child {
+      border-right: none;
+    }
+
+    /* Breite ergibt sich aus dem Inhalt (Label + Chart-Breite unten + Innenabstand) statt aus einem
+       geraten Fixwert - dadurch schliesst die Spalte immer bündig mit dem Chart ab, kein Leerraum bis
+       zum nächsten Slot (FLOORPLANEXPLORATORY). Label und Chart stehen nebeneinander (row), nicht
+       gestapelt. */
     .filter-slot--geschoss {
-      position: relative;
-      flex: 0 0 110px;
+      flex: 0 0 auto;
+      display: flex;
+      flex-direction: row;
     }
 
-    .filter-slot--geschoss summary {
-      cursor: pointer;
-      font-size: 14px;
-      font-weight: 700;
-      list-style: none;
-      /* eigenes Dreieck statt der Browser-Standard-Markierung */
+    /* Label steht vertikal, von unten nach oben lesbar (rotate(180deg) dreht die von vertical-rl
+       standardmässig oben-nach-unten lesbare Textrichtung um) - align-self: center zentriert es neben
+       dem Chart, statt es (wie der Rest der Reihe per Default) auf die volle Höhe zu strecken. */
+    .filter-slot--geschoss .filter-slot-label {
+      writing-mode: vertical-rl;
+      transform: rotate(180deg);
+      align-self: center;
+      margin: 0 8px 0 0;
     }
 
-    .filter-slot--geschoss summary::-webkit-details-marker {
-      display: none;
+    /* Geschoss-Panel liegt (anders als die Tab-Bodies unten) IM normalen Fluss der Leiste statt
+       schwebend darüber - es ist immer sichtbar und füllt die von --header-hoehe vorgegebene Höhe
+       komplett aus. */
+    .filter-slot--geschoss .filter-slot-panel {
+      flex: 1 1 auto;
+      min-height: 0;
     }
 
-    .filter-slot--geschoss summary::before {
-      content: "▸";
-      display: inline-block;
-      width: 1em;
-      color: #9C9888;
+    .filter-slot--geschoss .chart-card {
+      height: 100%;
     }
 
-    .filter-slot--geschoss[open] summary::before {
-      content: "▾";
+    /* Eigene SVG-Grösse statt der allgemeinen .chart-svg-Regel (width:100%/height:auto/aspect-ratio) -
+       feste Breite (bestimmt gleichzeitig die Breite der ganzen Geschoss-Spalte, siehe oben), Höhe
+       füllt das Panel. viewBox + preserveAspectRatio (SVG-Default "xMidYMid meet") skaliert den
+       Chart-Inhalt dabei automatisch verzerrungsfrei in die Box, ganz ohne eigene
+       aspect-ratio-Rechnung. */
+    .filter-slot--geschoss .chart-svg {
+      width: 160px;
+      height: 100%;
+      aspect-ratio: auto;
     }
 
     /* Schwebt über dem Canvas statt die Leiste zu vergrössern (wie die alte .filter-panel-Karte) -
-       .filter-slot-body (Gebäude/Wohnungen/Zimmer-Tabs) verwendet dieselbe Regel wie .filter-slot-panel
-       (Geschoss-Dropdown), damit Auf-/Zuklappen NIE die reservierte Höhe der Leiste (und damit die
-       Canvas-Position/-Grösse) verändert - nur die immer sichtbare Kopfzeile bestimmt --oberer-rand. */
-    .filter-slot-panel,
+       nur die Tab-Slots (Gebäude/Wohnungen/Zimmer) verwenden das, damit deren Auf-/Zuklappen NIE die
+       reservierte Höhe der Leiste (und damit die Canvas-Position/-Grösse) verändert - nur die immer
+       sichtbare Kopfzeile bestimmt --oberer-rand. */
     .filter-slot-body {
       position: absolute;
       top: 100%;
@@ -289,8 +285,7 @@
       gap: 2px;
     }
 
-    .filter-header button,
-    .filter-toggle {
+    .filter-header button {
       font: inherit;
       font-weight: 600;
       padding: 8px 14px;
@@ -303,8 +298,7 @@
       transition: transform 0.15s ease, box-shadow 0.15s ease;
     }
 
-    .filter-header button:hover,
-    .filter-toggle:hover {
+    .filter-header button:hover {
       transform: translateY(-2px);
       box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
     }
@@ -316,29 +310,47 @@
       box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
     }
 
-    .filter-toggle {
-      align-self: center;
-      margin-left: auto;
-      width: 32px;
-      height: 32px;
-      padding: 0;
-      font-size: 14px;
-      line-height: 1;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-
     .filter-slot--tabs {
       position: relative;
       flex: 1 1 0;
       min-width: 220px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
     }
 
     .filter-slot-label {
       margin: 0 0 8px;
       font-size: 13px;
       font-weight: 700;
+    }
+
+    /* Gebäude/Wohnungen/Zimmer: Label ist ein <button> und klappt (siehe main.js) nur den eigenen
+       .filter-slot-body auf/zu, unabhängig von den anderen beiden Slots. Pfeil zeigt im
+       eingeklappten Zustand nach unten ("mehr Inhalt darunter, hier klicken") und dreht sich beim
+       Aufklappen nach oben. */
+    .filter-slot--tabs .filter-slot-label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font: inherit;
+      font-weight: 700;
+      border: none;
+      background: none;
+      padding: 0;
+      color: inherit;
+      cursor: pointer;
+    }
+
+    .filter-slot--tabs .filter-slot-label::after {
+      content: "▾";
+      font-size: 10px;
+      color: #9C9888;
+      transition: transform 0.15s ease;
+    }
+
+    .filter-slot--tabs:not(.eingeklappt) .filter-slot-label::after {
+      transform: rotate(180deg);
     }
 
     .filter-tabs {
@@ -356,11 +368,13 @@
       font-size: 11px;
       font-weight: 500;
       padding: 4px 9px;
-      border: 1px solid var(--border);
+      border: none;
       border-radius: 999px;
       background: transparent;
       color: #5C584F;
       cursor: pointer;
+      writing-mode: vertical-rl;
+      transform: rotate(180deg);
     }
 
     .filter-tab.aktiv {
@@ -370,27 +384,8 @@
       font-weight: 600;
     }
 
-    .filter-tab-dot {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: #c0392b;
-      visibility: hidden;
-    }
-
-    .filter-tab.hat-auswahl .filter-tab-dot {
-      visibility: visible;
-    }
-
-    .filter-slot--geschoss summary.hat-auswahl {
-      color: #c0392b;
-    }
-
-    /* .filter-tabs bleibt bewusst auch im eingeklappten Zustand sichtbar (Teil der konstanten
-       Kopfzeile) - nur die schwebenden Inhalte selbst verschwinden, siehe Kommentar bei
-       .filter-slot-panel/.filter-slot-body oben. */
-    .filter-leiste.eingeklappt .filter-slot-body,
-    .filter-leiste.eingeklappt .filter-slot-panel {
+    .filter-slot--tabs.eingeklappt .filter-slot-body,
+    .filter-slot--tabs.eingeklappt .filter-tabs {
       display: none;
     }
 
@@ -428,11 +423,6 @@
       stroke-width: 1;
     }
 
-    .chart-svg .bar-label {
-      font-size: 9px;
-      fill: #5C584F;
-    }
-
     .filter-tooltip {
       position: fixed;
       z-index: 30;
@@ -453,6 +443,8 @@
 
   <div id="infobox"></div>
 
+  <!-- Titelseite -> hier kann der Text des Titels geändert werden. -->
+
   <div id="splash">
     <h1 id="splash-titel">FLOORPLANEXPLORATORY</h1>
     <p id="splash-lead">
@@ -462,17 +454,16 @@
     <p id="splash-fortschritt">Lädt…</p>
   </div>
 
-  <header id="filter-leiste" class="filter-leiste eingeklappt">
+  <header id="filter-leiste" class="filter-leiste">
 
-    <details class="filter-slot filter-slot--geschoss" data-slot="geschoss">
-      <summary>Geschoss</summary>
+    <div class="filter-slot filter-slot--geschoss" data-slot="geschoss">
+      <p class="filter-slot-label">Geschoss</p>
       <div class="filter-slot-panel">
         <div class="chart-card" data-dim="geschoss">
-          <h3>Geschoss</h3>
           <svg class="chart-svg" viewBox="0 0 400 220"></svg>
         </div>
       </div>
-    </details>
+    </div>
 
     <div class="filter-slot filter-slot--kopf">
       <h1 id="kopf-titel">FLOORPLANEXPLORATORY</h1>
@@ -485,8 +476,7 @@
       </div>
     </div>
 
-    <div class="filter-slot filter-slot--tabs" data-slot="gebaeude">
-      <p class="filter-slot-label">Gebäude</p>
+    <div class="filter-slot filter-slot--tabs eingeklappt" data-slot="gebaeude">
       <nav class="filter-tabs"></nav>
       <div class="filter-slot-body">
 
@@ -521,10 +511,10 @@
         </div>
 
       </div>
+      <button type="button" class="filter-slot-label" aria-expanded="false">Gebäude</button>
     </div>
 
-    <div class="filter-slot filter-slot--tabs" data-slot="wohnungen">
-      <p class="filter-slot-label">Wohnungen</p>
+    <div class="filter-slot filter-slot--tabs eingeklappt" data-slot="wohnungen">
       <nav class="filter-tabs"></nav>
       <div class="filter-slot-body">
 
@@ -544,10 +534,10 @@
         </div>
 
       </div>
+      <button type="button" class="filter-slot-label" aria-expanded="false">Wohnungen</button>
     </div>
 
-    <div class="filter-slot filter-slot--tabs" data-slot="zimmer">
-      <p class="filter-slot-label">Zimmer</p>
+    <div class="filter-slot filter-slot--tabs eingeklappt" data-slot="zimmer">
       <nav class="filter-tabs"></nav>
       <div class="filter-slot-body">
 
@@ -582,9 +572,8 @@
         </div>
 
       </div>
+      <button type="button" class="filter-slot-label" aria-expanded="false">Zimmer</button>
     </div>
-
-    <button id="filter-toggle" class="filter-toggle" type="button" aria-expanded="false" aria-label="Filter anzeigen">▾</button>
 
   </header>
 
