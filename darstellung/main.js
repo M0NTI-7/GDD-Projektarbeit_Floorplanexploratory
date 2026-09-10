@@ -9,6 +9,7 @@ import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
 import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 
 // --------------------------------------------------------------------------------
 
@@ -45,6 +46,9 @@ const scene = new THREE.Scene();
 // Fallback für den allerersten Sekundenbruchteil (versteckt hinter #splash) - danach hält ein
 // ResizeObserver auf #filter-leiste (siehe weiter unten) obererRandPx synchron mit der tatsächlich
 // gerenderten Höhe der Leiste, da diese sich beim Ein-/Ausklappen und je nach Tab-Slot ändert.
+
+
+
 let obererRandPx = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--oberer-rand")) || 0;
 
 function zeichenBreite() {
@@ -71,8 +75,11 @@ let positionierungFixiert = false;
 
 const STARTGESCHOSS_LABEL = "0101 | 01 OG";
 
+const KAMERA_FOV = 50; // Grad - Blickwinkel der Perspective-Kamera bei gekippter Ansicht
+
 const aspect = zeichenBreite() / zeichenHoehe();
-const camera = new THREE.OrthographicCamera(
+
+const kameraOrtho = new THREE.OrthographicCamera(
   (-frustumSize * aspect) / 2,
   (frustumSize * aspect) / 2,
   frustumSize / 2,
@@ -81,15 +88,58 @@ const camera = new THREE.OrthographicCamera(
   10000 // alles was weiter weg als 1000 ist wird nicht dargestellt
 );
 
+// near:1 statt 0.01 wie bei Orthographic - Perspective-Tiefenpuffer-Präzision ist empfindlich auf das
+// Verhältnis far/near, sonst "flackern" (z-fighting) weit entfernte, übereinanderliegende Linien.
+const kameraPerspektive = new THREE.PerspectiveCamera(KAMERA_FOV, aspect, 1, 10000);
+
+// Grundriss (senkrecht von oben, Kippwinkel <= SCHWENK_SCHWELLE_RAD) zeigt die masstabsgetreue
+// Orthographic-Draufsicht ohne Fluchtpunkt-Verzerrung; sobald gekippt/rotiert wird, übernimmt die
+// Perspective-Kamera für den räumlichen 3D-Blick auf die gestapelten Geschosse (siehe
+// kameraSchwenkAktualisieren, wo zwischen beiden umgeschaltet wird, und kameraTypWechseln für den
+// nahtlosen Übergang). "camera" zeigt immer auf die aktuell aktive der beiden.
+let camera = kameraOrtho;
+
 camera.position.set(0, 100, 0); // koordinatensystem = von vorne nicht wie CAD, Y ist die Höhe
 camera.lookAt(0, 0, 0);
 
 function kameraFrustumAktualisieren(aspect) {
-  camera.left = (-frustumSize * aspect) / 2;
-  camera.right = (frustumSize * aspect) / 2;
-  camera.top = frustumSize / 2;
-  camera.bottom = -frustumSize / 2;
-  camera.updateProjectionMatrix();
+  kameraOrtho.left = (-frustumSize * aspect) / 2;
+  kameraOrtho.right = (frustumSize * aspect) / 2;
+  kameraOrtho.top = frustumSize / 2;
+  kameraOrtho.bottom = -frustumSize / 2;
+  kameraOrtho.updateProjectionMatrix();
+
+  kameraPerspektive.aspect = aspect;
+  kameraPerspektive.updateProjectionMatrix();
+}
+
+// Rechnet eine gewünschte sichtbare Höhe (Meter, siehe sichtbareHoeheMeterAktuell) in den dafür nötigen
+// Perspective-Kameraabstand zum Ziel um - Umkehrung der Formel in sichtbareHoeheMeterAktuell.
+function kameraDistanzFuerSichtbareHoehe(hoeheMeter) {
+  return hoeheMeter / (2 * Math.tan(THREE.MathUtils.degToRad(kameraPerspektive.fov / 2)));
+}
+
+// Wechselt die aktive Kamera (siehe camera oben) und überträgt dabei Blickrichtung und sichtbare Höhe
+// von der alten auf die neue Kamera, damit der Wechsel nicht sichtbar "springt".
+function kameraTypWechseln(neueKamera) {
+  if (neueKamera === camera) return;
+
+  const sichtbareHoeheMeter = sichtbareHoeheMeterAktuell();
+  const richtung = camera.position.clone().sub(controls.target).normalize();
+
+  if (neueKamera === kameraPerspektive) {
+    const distanz = kameraDistanzFuerSichtbareHoehe(sichtbareHoeheMeter);
+    kameraPerspektive.position.copy(controls.target).addScaledVector(richtung, distanz);
+  } else {
+    kameraOrtho.zoom = frustumSize / sichtbareHoeheMeter;
+    kameraOrtho.position.copy(camera.position); // Distanz ist für Orthographic irrelevant, nur die Richtung zählt
+    kameraOrtho.updateProjectionMatrix();
+  }
+  neueKamera.lookAt(controls.target);
+
+  camera = neueKamera;
+  controls.object = camera;
+  controls.update();
 }
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true }); // alpha: Canvas-Hintergrund transparent statt opak
@@ -115,6 +165,10 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.target.set(0, 0, 0);
 controls.zoomSpeed = 6; // Hier kann die Zoomgeschwindigkeit angepasst werden
 controls.zoomToCursor = true; // zoom direkt auf die Mausposition
+// Nur für die Perspective-Phase relevant (Orthographic zoomt über .zoom, nicht per Dolly) - verhindert,
+// dass man beim Reinzoomen durchs Ziel hindurch- oder ins Unendliche rausfährt.
+controls.minDistance = 1;
+controls.maxDistance = 9000;
 controls.mouseButtons = {
   MIDDLE: THREE.MOUSE.PAN,
   RIGHT: THREE.MOUSE.ROTATE,
@@ -134,17 +188,17 @@ function layoutAktualisieren() {
 
 window.addEventListener("resize", layoutAktualisieren);
 
-// Verhalten: Gebäude/Wohnungen/Zimmer klappen unabhängig voneinander auf/zu - Klick auf das
-// Slot-Label (siehe .filter-slot--tabs .filter-slot-label in index.html) togglet NUR dessen eigenen
-// .filter-slot-body, nicht die anderen Slots. Da sich die Höhe der Leiste dadurch (und je nach
-// aktivem Tab) ändert, hält ein ResizeObserver obererRandPx synchron statt ihn nur einmal aus der
-// CSS-Variable zu lesen (siehe obererRandPx oben).
+// Verhalten: Geschoss/Gebäude/Wohnungen/Zimmer klappen unabhängig voneinander auf/zu - Klick auf das
+// Slot-Label (siehe .filter-slot-label in index.html) togglet NUR den eigenen .filter-slot, nicht die
+// anderen Slots. Da sich die Höhe der Leiste dadurch (und je nach aktivem Tab) ändert, hält ein
+// ResizeObserver obererRandPx synchron statt ihn nur einmal aus der CSS-Variable zu lesen (siehe
+// obererRandPx oben).
 
 const filterLeisteElement = document.getElementById("filter-leiste");
 
-for (const label of document.querySelectorAll(".filter-slot--tabs .filter-slot-label")) {
+for (const label of document.querySelectorAll(".filter-slot-label")) {
   label.addEventListener("click", () => {
-    const slot = label.closest(".filter-slot--tabs");
+    const slot = label.closest(".filter-slot");
     const eingeklappt = slot.classList.toggle("eingeklappt");
     label.setAttribute("aria-expanded", String(!eingeklappt));
   });
@@ -165,15 +219,15 @@ new ResizeObserver(() => {
 
 // Ziel: Gebäude-/Wohnungs-/Zimmer-Slot der Filterleiste zeigen ihre mehreren Kennzahlen als Tabs statt
 // alle gleichzeitig - unabhängig von DIMENSIONEN/WOHNUNGEN (läuft daher schon vor dem Datenladen).
-// Jeder Tab liest sein Label direkt aus dem h3 der zugehörigen (unveränderten) .chart-card, damit der
-// Titel nicht doppelt gepflegt werden muss.
+// Jeder Tab liest sein Label aus data-kuerzel der zugehörigen .chart-card - kurz genug für die schmale
+// Tab-Leiste, während das <h3> in der Card selbst weiterhin den ausgeschriebenen Titel zeigt.
 
 // --------------------------------------------------------------------------------
 
 const FILTER_GRUPPEN = {
   gebaeude: ["gf", "hnfAnteil", "wohnungen", "anzahlWohnungenProGeschoss", "gebaeudetiefe", "geschossigkeit"],
-  wohnungen: ["zimmer", "wohnungsgroesse", "anzahlBadezimmer"],
-  zimmer: ["kuechengroesse", "esszimmergroesse", "wohnenSchlafenGroesse", "balkongroesse", "reduitgroesse", "nasszellengroesse"],
+  wohnungen: ["wohnungsgroesse", "zimmer", "anzahlBadezimmer"],
+  zimmer: ["wohnenSchlafenGroesse", "kuechengroesse", "esszimmergroesse", "nasszellengroesse", "reduitgroesse", "balkongroesse"],
 };
 
 function filterTabsInitialisieren() {
@@ -184,7 +238,7 @@ function filterTabsInitialisieren() {
 
     dims.forEach((dim, i) => {
       const card = body.querySelector(`.chart-card[data-dim="${dim}"]`);
-      const label = card.querySelector("h3").textContent;
+      const label = card.dataset.kuerzel;
 
       const tab = document.createElement("button");
       tab.type = "button";
@@ -209,42 +263,13 @@ function filterTabsInitialisieren() {
 }
 filterTabsInitialisieren();
 
-// Verhalten: Hier wird pro Gebäude eine HTML-Overlay-Gruppe (Zimmer-Legende) auf die projizierte
-// Bildschirmposition der Gebäudemitte gesetzt und mit dem Kamera-Zoom skaliert. Als CSS-Elemente
-// statt Three.js-Meshes sind Zimmer-Text und -Kreise dadurch garantiert konsistent zueinander
-// positioniert (feste Pixel-Abstände zueinander), schrumpfen aber gemeinsam mit den Gebäuden beim
-// Rauszoomen statt bei jeder Zoomstufe gleich gross zu bleiben.
-
-const gebaeudeOverlays = []; // { position: THREE.Vector3, element: HTMLElement }
-
-function gebaeudeOverlayErstellen(mitteX, mitteZ, zimmerProWohnung) {
-  const element = document.createElement("div");
-  element.className = "gebaeude-overlay";
-
-  // const legende = zimmerLegendeErstellen(zimmerProWohnung);
-  // if (legende) element.appendChild(legende);
-
-  document.body.appendChild(element);
-  const position = new THREE.Vector3(mitteX, 0, mitteZ);
-  gebaeudeOverlays.push({ position, element });
-  return { element, position };
-}
-
-function gebaeudeOverlaysAktualisieren() {
-  // camera.zoom ist 1 im Moment der Kamera-Zentrierung (siehe kameraAufGebaeudeZentrieren) und
-  // ändert sich beim Scrollen über OrbitControls. Als Skalierungsfaktor sorgt das dafür, dass die
-  // Overlays beim Rauszoomen mit den Gebäuden mitschrumpfen statt starr 60px zu bleiben und sich
-  // beim Reinzoomen entsprechend vergrössern. Nach unten begrenzt, damit sie nie unsichtbar werden.
-  const massstab = Math.max(0.15, camera.zoom);
-
-  for (const { position, element } of gebaeudeOverlays) {
-    const projiziert = position.clone().project(camera);
-    // obererRandPx dazuzählen: die NDC-Koordinaten (-1 bis 1) beziehen sich auf die Zeichenfläche,
-    // die Overlays sind aber fixed im ganzen Fenster positioniert (siehe .gebaeude-overlay in index.html).
-    element.style.left = `${((projiziert.x + 1) / 2) * zeichenBreite()}px`;
-    element.style.top = `${obererRandPx + ((1 - projiziert.y) / 2) * zeichenHoehe()}px`;
-    element.style.transform = `scale(${massstab})`;
-  }
+// Aktuelle sichtbare Höhe der Szene in Metern, unabhängig davon welche der beiden Kameras (siehe
+// camera oben) gerade aktiv ist - bei Orthographic direkt aus frustumSize/zoom, bei Perspective aus
+// dem Kameraabstand zum Ziel und dem Blickwinkel (siehe kameraDistanzFuerSichtbareHoehe für die
+// Umkehrung, verwendet in kameraTypWechseln beim Kamera-Wechsel).
+function sichtbareHoeheMeterAktuell() {
+  if (camera === kameraOrtho) return frustumSize / kameraOrtho.zoom;
+  return 2 * camera.position.distanceTo(controls.target) * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
 }
 
 // Verhalten: Reagiert auf die aktuelle Zoomstufe (sichtbare Höhe der Szene in Metern) und blendet
@@ -252,7 +277,7 @@ function gebaeudeOverlaysAktualisieren() {
 // Rechnet nur bei einer tatsächlichen Änderung neu (nicht bei jedem Frame), analog zu
 // letztePackSignatur beim Neu-Packen.
 function detailSichtbarkeitAktualisieren(erzwingen = false) {
-  const sichtbareHoeheMeter = frustumSize / camera.zoom;
+  const sichtbareHoeheMeter = sichtbareHoeheMeterAktuell();
   const neuDetailSichtbar = sichtbareHoeheMeter <= DETAIL_SCHWELLE_METER;
   if (!erzwingen && neuDetailSichtbar === detailSichtbar) return;
 
@@ -272,6 +297,7 @@ function kameraSchwenkAktualisieren(erzwingen = false) {
   if (!erzwingen && neuGeschwenkt === kameraGeschwenkt) return;
 
   kameraGeschwenkt = neuGeschwenkt;
+  kameraTypWechseln(kameraGeschwenkt ? kameraPerspektive : kameraOrtho);
   for (const gebaeude of gebaeudeNachId.values()) {
     for (const gruppe of gebaeude.linienMaterialien) {
       linienSichtbarkeitAnwenden(gruppe);
@@ -288,7 +314,7 @@ const WOHNUNGSKREIS_REFERENZ_METER = 300;
 const ZIMMER_KONTUR_EINFUEGEPUNKT_OFFSET = THREE.MathUtils.degToRad(120); // fixer Zusatz-Drehwinkel (Gegenuhrzeigersinn), verschiebt nur den "Start" des Strich-Musters relativ zur Kamera
 
 function wohnungsKreiseSkalierenAnKamera() {
-  const sichtbareHoeheMeter = frustumSize / camera.zoom;
+  const sichtbareHoeheMeter = sichtbareHoeheMeterAktuell();
   const faktor = Math.max(1, sichtbareHoeheMeter / WOHNUNGSKREIS_REFERENZ_METER);
   for (const kreis of alleWohnungsKreise) {
     if (kreis.visible) kreis.scale.setScalar(faktor);
@@ -296,21 +322,73 @@ function wohnungsKreiseSkalierenAnKamera() {
 
   // Billboard-Effekt: die Zimmer-/Bad-Strich-Konturen drehen sich um ihre eigene Y-Achse mit, damit
   // sie beim Umkreisen der Szene immer zur Kamera hin ausgerichtet bleiben (sonst stünde man beim
-  // Navigieren teils seitlich vor einem Strich und er wäre kaum sichtbar). Bei Orthographic-Kamera
-  // (parallele Strahlen statt Fluchtpunkt) ist der Azimutwinkel für die ganze Szene gleich - ein
-  // einziger Wert reicht für alle Wohnungen, statt pro Wohnung einzeln zu rechnen.
+  // Navigieren teils seitlich vor einem Strich und er wäre kaum sichtbar). Ein einziger, für die ganze
+  // Szene gleicher Azimutwinkel reicht dafür aus, statt pro Wohnung einzeln zu rechnen - bei der
+  // Orthographic-Draufsicht (parallele Strahlen statt Fluchtpunkt) exakt, bei der gekippten Perspective-
+  // Kamera nur eine Näherung, die bei dem kleinen FOV und der meist zentrierten Szene nicht auffällt.
   const azimut = controls.getAzimuthalAngle() + ZIMMER_KONTUR_EINFUEGEPUNKT_OFFSET;
   for (const kontur of alleZimmerKonturen) {
     if (kontur.visible) kontur.rotation.y = azimut;
   }
 }
 
+// --------------------------------------------------------------------------------
+
+// Ziel: WASD bewegt die Kamera zusätzlich zur Maussteuerung (OrbitControls) - vor allem in der
+// gekippten Perspective-Ansicht ist reines Maus-Rotate/Pan manchmal unhandlich, WASD bietet dafür
+// eine direktere Alternative zum "Durchfliegen" der Szene.
+
+// --------------------------------------------------------------------------------
+
+const wasdGedrueckt = new Set();
+
+window.addEventListener("keydown", (e) => {
+  const taste = e.key.toLowerCase();
+  if (taste === "w" || taste === "a" || taste === "s" || taste === "d") wasdGedrueckt.add(taste);
+});
+
+window.addEventListener("keyup", (e) => {
+  wasdGedrueckt.delete(e.key.toLowerCase());
+});
+
+const WASD_GESCHWINDIGKEIT_FAKTOR = 0.6; // Meter pro Sekunde, pro Meter sichtbarer Szenenhöhe - skaliert automatisch mit dem Zoom
+let letzterFrameZeitpunkt = performance.now();
+
+// Bewegt camera.position UND controls.target um denselben Betrag (reine Parallelverschiebung, wie
+// OrbitControls' Maus-Pan) - Blickrichtung und Zoom bleiben dabei unverändert. "Vorwärts"/"Rechts"
+// werden aus dem aktuellen Azimutwinkel abgeleitet (siehe wohnungsKreiseSkalierenAnKamera für dieselbe
+// Umrechnung), damit W immer "in die aktuelle Blickrichtung" bewegt, unabhängig vom Kamera-Kippwinkel.
+function wasdBewegungAnwenden() {
+  const jetzt = performance.now();
+  const deltaSekunden = (jetzt - letzterFrameZeitpunkt) / 1000;
+  letzterFrameZeitpunkt = jetzt;
+
+  if (wasdGedrueckt.size === 0) return;
+
+  const azimut = controls.getAzimuthalAngle();
+  const vorwaerts = new THREE.Vector3(-Math.sin(azimut), 0, -Math.cos(azimut));
+  const rechts = new THREE.Vector3(-vorwaerts.z, 0, vorwaerts.x);
+
+  const bewegung = new THREE.Vector3();
+  if (wasdGedrueckt.has("w")) bewegung.add(vorwaerts);
+  if (wasdGedrueckt.has("s")) bewegung.sub(vorwaerts);
+  if (wasdGedrueckt.has("d")) bewegung.add(rechts);
+  if (wasdGedrueckt.has("a")) bewegung.sub(rechts);
+  if (bewegung.lengthSq() === 0) return;
+
+  const distanz = sichtbareHoeheMeterAktuell() * WASD_GESCHWINDIGKEIT_FAKTOR * deltaSekunden;
+  bewegung.normalize().multiplyScalar(distanz);
+
+  camera.position.add(bewegung);
+  controls.target.add(bewegung);
+}
+
 renderer.setAnimationLoop(() => {
+  wasdBewegungAnwenden();
   controls.update();
   detailSichtbarkeitAktualisieren();
   kameraSchwenkAktualisieren();
   wohnungsKreiseSkalierenAnKamera();
-  gebaeudeOverlaysAktualisieren();
   renderer.render(scene, camera);
 });
 
@@ -320,8 +398,8 @@ renderer.setAnimationLoop(() => {
 
 // --------------------------------------------------------------------------------
 
-const csvPfad = "../data-prep/geometries_erste100.csv"; // für zum Testen
-// const csvPfad = "../data-prep/geometries_final_angereichert.csv";
+// const csvPfad = "../data-prep/geometries_erste100.csv"; // für zum Testen
+const csvPfad = "../data-prep/geometries_final_angereichert.csv";
 
 // dynamicTyping:true würde Papaparse dazu bringen, bei JEDER Zelle eine Zahlen-Erkennung
 // laufen zu lassen - auch auf der sehr langen "koordinaten"-Spalte (WKT-Polygon-Strings).
@@ -405,7 +483,7 @@ function segmenteHinzufuegen(zielArray, kontur, hoehenkote = 0) {
 // unsichtbar statt schwarz.
 const schwarzplanMaterial = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.DoubleSide });
 
-const gestapelteFuellungMaterial = new THREE.MeshBasicMaterial({ color: "#F0EDE4", side: THREE.DoubleSide }); // Farbe: GF Mesh bei Isometrie
+const gestapelteFuellungMaterial = new THREE.MeshBasicMaterial({ color: "var(--layout-hintergrund", side: THREE.DoubleSide }); // Farbe: GF Mesh bei Isometrie
 
 // gruppe.fuellung ist entweder ein einzelnes Mesh, eine THREE.Group mit mehreren Meshes, oder null
 // (siehe schwarzplanFuellungErstellen) - diese Hilfsfunktion setzt das Material unabhängig davon,
@@ -468,7 +546,7 @@ function schwarzplanFuellungErstellen(rohZeilen) {
       // ShapeGeometry liegt lokal in der XY-Ebene (z=0) - +90° um X dreht (x,y,0) nach (x,0,y), also
       // in dieselbe XZ-Ebene wie die Umfassungslinien (siehe segmenteHinzufuegen).
       mesh.rotation.x = Math.PI / 2;
-      mesh.position.y = zeile.hoehenkote - 0.01; // knapp unter den Linien, damit diese immer sichtbar obenauf bleiben
+      mesh.position.y = zeile.hoehenkote - 0.5; // knapp unter den Linien, damit diese immer sichtbar obenauf bleiben
       meshes.push(mesh);
     }
   }
@@ -509,12 +587,20 @@ const raumHighlightMaterial = new THREE.MeshBasicMaterial({
 // Ziel: Räume sind bisher nur an ihrer Umfassungslinie anklickbar (siehe klickbareObjekte), nicht in
 // ihrer Fläche - ein sichtbares Material geht nicht, weil alle Geschosse koplanar auf y=0 liegen und
 // sich beim Reinzoomen mehrere Geschosse gleichzeitig zeigen können (siehe linienSichtbarkeitAnwenden)
-// - ein echtes Material würde darunterliegende Geschosse zudecken. Stattdessen pro Raum ein
-// unsichtbares Mesh (raumKlickflaecheMaterial) nur fürs Raycasting, analog zu
-// schwarzplanFuellungErstellen, aber mit userData.zeile statt userData.zeilen[faceIndex] pro Mesh -
-// jeder Raum bekommt sein eigenes Mesh statt einer gemeinsamen Geometrie mit vielen Facetten.
+// - ein echtes Material würde darunterliegende Geschosse zudecken. Stattdessen EIN unsichtbares Mesh
+// pro Aufruf (raumKlickflaecheMaterial) nur fürs Raycasting, dessen Geometrie alle Raum-Konturen der
+// übergebenen rohZeilen zu EINER BufferGeometry zusammenfasst (mergeGeometries mit useGroups:true) -
+// bei hunderttausenden Räumen im gesamten Datensatz wäre je ein eigenes Mesh+Geometry-Objekt pro Raum
+// (Overhead durch Matrix4/Quaternion/BoundingSphere/BufferAttribute-Wrapper pro Objekt) zu
+// speicherintensiv (siehe Absturz "out of memory"). Analog zu den Umfassungslinien (linien.userData.
+// zeilen[segmentIndex], siehe weiter unten), trägt das gemergte Mesh userData.raeume[groupIndex] -
+// geometry.groups (ein Eintrag pro Aussenkontur) macht daraus den Link zwischen einem angeklickten
+// Face und seiner Ursprungszeile, UND erlaubt über group.materialIndex weiterhin, einzelne Räume
+// individuell einzufärben (Klick-Highlight, Zimmer-Subtyp-Filter - siehe RAUM_MATERIALIEN_ARRAY),
+// ohne dass jeder Raum ein eigenes Mesh bräuchte.
 function raumKlickflaechenErstellen(rohZeilen) {
-  const meshes = [];
+  const geometrien = [];
+  const raeume = [];
 
   for (const zeile of rohZeilen) {
     if (zeile.konturen.length === 0) continue;
@@ -536,15 +622,31 @@ function raumKlickflaechenErstellen(rohZeilen) {
 
     for (const { shape } of aussenKonturen) {
       const geometrie = new THREE.ShapeGeometry(shape);
-      const mesh = new THREE.Mesh(geometrie, raumKlickflaecheMaterial);
-      mesh.rotation.x = Math.PI / 2; // gleiche Ausrichtung wie schwarzplanFuellungErstellen
-      mesh.position.y = zeile.hoehenkote - 0.005; // knapp unter den Linien, damit diese bei aktiviertem Highlight obenauf bleiben
-      mesh.userData.zeile = zeile;
-      meshes.push(mesh);
+      // Höhe hier statt über mesh.position.y setzen (wie es ein Einzel-Mesh früher tat) - das
+      // gemergte Mesh hat nur EINE gemeinsame Position, verschiedene Zeilen dieser Gruppe können
+      // aber unterschiedliche hoehenkote haben. ShapeGeometry liegt lokal in der XY-Ebene (z=0); die
+      // erst NACH dem Merge angewandte mesh.rotation.x = 90° (siehe unten) bildet lokal-Z auf
+      // Welt-Y ab mit world_y = -local_z (Rotationsmatrix um X, siehe Kommentar bei mesh.rotation.x)
+      // - daher hier auf lokal-Z statt Y verschieben, mit umgekehrtem Vorzeichen, damit nach der
+      // Rotation exakt world_y = hoehenkote - 0.005 herauskommt.
+      geometrie.translate(0, 0, -(zeile.hoehenkote - 0.005)); // knapp unter den Linien, damit diese bei aktiviertem Highlight obenauf bleiben
+      geometrien.push(geometrie);
+      raeume.push(zeile);
     }
   }
 
-  return meshes;
+  if (geometrien.length === 0) return null;
+
+  const geometrie = mergeGeometries(geometrien, true);
+  // mergeGeometries vergibt bei useGroups:true pro Eingabegeometrie einen eigenen, aufsteigenden
+  // materialIndex (0,1,2,...) - hier sollen aber erstmal ALLE Räume auf den Standard-Index zeigen,
+  // individuelle Indizes werden erst bei Klick-Highlight/Subtyp-Filter gesetzt (siehe raumSubtypMarkierungAktualisieren).
+  for (const gruppe of geometrie.groups) gruppe.materialIndex = RAUM_MATERIAL_INDEX.standard;
+
+  const mesh = new THREE.Mesh(geometrie, RAUM_MATERIALIEN_ARRAY);
+  mesh.rotation.x = Math.PI / 2; // gleiche Ausrichtung wie schwarzplanFuellungErstellen
+  mesh.userData.raeume = raeume; // parallel zu geometry.groups, analog zu linien.userData.zeilen
+  return mesh;
 }
 
 // Ziel: Pro Wohnung eine kreisförmige Flächenfüllung (30% Deckkraft, damit Räume darunter noch
@@ -757,7 +859,11 @@ function gebaeudeDarstellen(zeilen) {
           maxY = Math.max(maxY, y);
         }
       }
-      return { ...zeile, konturen };
+      // koordinaten (roher WKT-String) wird nirgends mehr gebraucht, sobald konturen daraus geparst
+      // ist - weggelassen, da er oft das grösste Feld pro Zeile ist und sonst für die Lebensdauer der
+      // App doppelt (als String UND als geparste Zahlen) im Speicher bleibt.
+      const { koordinaten, ...rest } = zeile;
+      return { ...rest, konturen };
     });
 
     const breite = maxX - minX;
@@ -945,22 +1051,23 @@ function gebaeudeDarstellen(zeilen) {
         }
       }
 
-      // Unsichtbare Klickflächen nur für Räume - macht sie in ihrer ganzen Fläche anklickbar statt
-      // nur an der Umfassungslinie, siehe raumKlickflaechenErstellen.
-      const klickflaechen = gruppe.entitaetTyp === "Raum" ? raumKlickflaechenErstellen(gruppe.rohZeilen) : [];
-      for (const mesh of klickflaechen) {
-        mesh.visible = linien.visible; // gleicher Startwert, wird ebenfalls gleich danach korrigiert
-        scene.add(mesh);
-        klickbareObjekte.push(mesh);
-        alleRaumKlickflaechen.push(mesh);
-        gebaeude.linienObjekte.push(mesh); // damit gebaeudePositionSetzen sie beim Neu-Packen mitverschiebt
+      // Unsichtbare Klickfläche nur für Räume - macht sie in ihrer ganzen Fläche anklickbar statt
+      // nur an der Umfassungslinie, siehe raumKlickflaechenErstellen. EIN gemergtes Mesh für alle
+      // Räume dieser Geschoss-Gruppe (statt eines pro Raum, siehe Kommentar dort).
+      const klickflaeche = gruppe.entitaetTyp === "Raum" ? raumKlickflaechenErstellen(gruppe.rohZeilen) : null;
+      if (klickflaeche) {
+        klickflaeche.visible = linien.visible; // gleicher Startwert, wird ebenfalls gleich danach korrigiert
+        scene.add(klickflaeche);
+        klickbareObjekte.push(klickflaeche);
+        alleRaumKlickflaechen.push(klickflaeche);
+        gebaeude.linienObjekte.push(klickflaeche); // damit gebaeudePositionSetzen sie beim Neu-Packen mitverschiebt
       }
 
       gebaeude.linienMaterialien.push({
         material,
         linien,
         fuellung,
-        klickflaechen,
+        klickflaeche,
         geschossLabel: gruppe.geschossLabel,
         entitaetTyp: gruppe.entitaetTyp,
         gefiltertSichtbar: true, // von gebaeudeDimmingAktualisieren aktuell gehalten, initial nichts gefiltert
@@ -977,7 +1084,6 @@ function gebaeudeDarstellen(zeilen) {
     gebaeude.wohnungsBadezimmerKontur = badezimmerKonturen;
   }
 
-  annotationenErstellen(gebaeudeListe);
   kameraAufGebaeudeZentrieren(gebaeudeListe);
   // erzwingen:true, weil frustumSize gerade erst durch kameraAufGebaeudeZentrieren den echten Wert
   // für diesen Datensatz bekommen hat - ohne das könnte der Vergleich mit dem alten Vorgabewert
@@ -1172,23 +1278,6 @@ function gebaeudePositionSetzen(gebaeude, neueMitteX, neueMitteZ) {
     linien.position.x += dx;
     linien.position.z += dz;
   }
-
-  gebaeude.overlayPosition.x += dx;
-  gebaeude.overlayPosition.z += dz;
-}
-
-// --------------------------------------------------------------------------------
-
-// Ziel: Zimmer-Legende ist pro Gebäude erstellt
-
-// --------------------------------------------------------------------------------
-
-function annotationenErstellen(gebaeudeListe) {
-  for (const gebaeude of gebaeudeListe) {
-    const overlay = gebaeudeOverlayErstellen(gebaeude.mitteX, gebaeude.mitteZ, gebaeude.zimmerProWohnung);
-    gebaeude.overlayElement = overlay.element;
-    gebaeude.overlayPosition = overlay.position; // für gebaeudePositionSetzen (Neu-Packen beim Filtern)
-  }
 }
 
 // --------------------------------------------------------------------------------
@@ -1201,79 +1290,42 @@ function annotationenErstellen(gebaeudeListe) {
 
 function kameraAufGebaeudeZentrieren(gebaeudeListe) {
   let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  let maxHoehe = 0;
   for (const gebaeude of gebaeudeListe) {
     minX = Math.min(minX, gebaeude.mitteX - gebaeude.ringAussenRadius);
     maxX = Math.max(maxX, gebaeude.mitteX + gebaeude.ringAussenRadius);
     minZ = Math.min(minZ, gebaeude.mitteZ - gebaeude.ringAussenRadius);
     maxZ = Math.max(maxZ, gebaeude.mitteZ + gebaeude.ringAussenRadius);
+    maxHoehe = Math.max(maxHoehe, gebaeude.maxHoehenkote + 10); // 10m Puffer nach oben, damit die Kamera nicht zu nah an der Decke ist
   }
 
   const zentrumX = (minX + maxX) / 2;
   const zentrumZ = (minZ + maxZ) / 2;
 
+  // aktuellesAspect muss VOR diagonalRadius stehen, da unten verwendet
   const aktuellesAspect = zeichenBreite() / zeichenHoehe();
-  // Kein künstlicher Rand mehr (kein randFaktor) - die Zeichnung soll links/unten/rechts direkt an die
-  // Kante gehen. Math.max wählt trotzdem die Achse mit dem grösseren Platzbedarf, sonst würde die
-  // andere Achse abgeschnitten - stimmt das Seitenverhältnis von Anordnung und Zeichenfläche nicht
-  // exakt überein, bleibt auf GENAU EINEM Achsenpaar (oben+unten ODER links+rechts) unvermeidbar ein
-  // kleiner Rand übrig, das ist reine Geometrie (Seitenverhältnis passt selten exakt), kein Setting.
-  frustumSize = Math.max(maxZ - minZ, (maxX - minX) / aktuellesAspect);
-  camera.zoom = 1; // sauberer "zoom to fit" statt mit dem zuletzt vom Nutzer gewählten Zoom zu skalieren
+
+  const horizontalRadius = Math.sqrt(((maxX - minX) / 2) ** 2 + ((maxZ - minZ) / 2) ** 2);
+  const diagonalRadius = Math.sqrt(horizontalRadius ** 2 + maxHoehe ** 2);
+
+frustumSize = Math.max(diagonalRadius * 2, (maxX - minX) / aktuellesAspect) * 0.38;
   kameraFrustumAktualisieren(aktuellesAspect);
-  camera.position.set(zentrumX, 100, zentrumZ);
+
+  // "zoom to fit": Blickrichtung bleibt erhalten (auch wenn schon gekippt, z.B. durch einen
+  // Filterwechsel während der Perspective-Phase), nur Zentrum und Zoom/Distanz werden neu gesetzt -
+  // sonst würde ein Neu-Zentrieren eine bereits gekippte Ansicht ungewollt auf die Draufsicht zurücksetzen.
+  if (camera === kameraOrtho) {
+    kameraOrtho.zoom = 1; // sauberer "zoom to fit" statt mit dem zuletzt vom Nutzer gewählten Zoom zu skalieren
+    camera.position.set(zentrumX, 100, zentrumZ);
+  } else {
+    const richtung = camera.position.clone().sub(controls.target).normalize();
+    const distanz = kameraDistanzFuerSichtbareHoehe(frustumSize);
+    camera.position.set(zentrumX, 0, zentrumZ).addScaledVector(richtung, distanz);
+  }
   camera.lookAt(zentrumX, 0, zentrumZ);
 
   controls.target.set(zentrumX, 0, zentrumZ);
   controls.update();
-}
-
-// --------------------------------------------------------------------------------
-
-// Ziel: Zimmerzahl sind dargestellt
-
-// --------------------------------------------------------------------------------
-
-function kreisElementErstellen(halb = false) {
-  const kreis = document.createElement("span");
-  kreis.className = halb ? "zimmer-kreis zimmer-kreis-halb" : "zimmer-kreis";
-  return kreis;
-}
-
-function zimmerLegendeErstellen(zimmerProWohnung) {
-  const wohnungenProZimmerzahl = {};
-  for (const zimmerzahl of Object.values(zimmerProWohnung)) {
-    wohnungenProZimmerzahl[zimmerzahl] = (wohnungenProZimmerzahl[zimmerzahl] || 0) + 1;
-  }
-
-  const zimmerzahlen = Object.keys(wohnungenProZimmerzahl).map(Number).sort((a, b) => a - b); // Aufsteigend sortiert
-  if (zimmerzahlen.length === 0) return null;
-
-  const legende = document.createElement("div");
-  legende.className = "zimmer-legende";
-
-  for (const zimmerzahl of zimmerzahlen) {
-    const volleKreise = Math.floor(zimmerzahl);
-    const halberKreis = zimmerzahl - volleKreise >= 0.5;
-    const anzahlWohnungen = wohnungenProZimmerzahl[zimmerzahl];
-
-    const reihe = document.createElement("div");
-    reihe.className = "zimmer-reihe";
-
-    const text = document.createElement("span");
-    text.textContent = `${anzahlWohnungen} Stk.`;
-    reihe.appendChild(text);
-
-    for (let i = 0; i < volleKreise; i++) {
-      reihe.appendChild(kreisElementErstellen());
-    }
-    if (halberKreis) {
-      reihe.appendChild(kreisElementErstellen(true));
-    }
-
-    legende.appendChild(reihe);
-  }
-
-  return legende;
 }
 
 // --------------------------------------------------------------------------------
@@ -1283,19 +1335,35 @@ function zimmerLegendeErstellen(zimmerProWohnung) {
 // --------------------------------------------------------------------------------
 
 const klickbareObjekte = [];
-const alleRaumKlickflaechen = []; // Teilmenge von klickbareObjekte (nur Raum-Meshes) - für raumSubtypMarkierungAktualisieren
+const alleRaumKlickflaechen = []; // Teilmenge von klickbareObjekte (nur die gemergten Raum-Meshes, ein Eintrag pro Gebäude+Geschoss statt pro Raum) - für raumSubtypMarkierungAktualisieren
 
 const raycaster = new THREE.Raycaster(); // greift die nächste Linie resp. Fläche die sich bei der Maus befindet
 raycaster.params.Line2 = { threshold: 8 }; // die Zahl ist die Tolleranz wie genau ich die Linie treffen muss
 
 const infobox = document.getElementById("infobox");
 
-// Aktuell farblich markierte Raum-Meshes (raumHighlightMaterial statt raumKlickflaecheMaterial), falls
-// gerade ein Raum ausgewählt ist - siehe Klick-Handler unten. Ein Raum kann bei unregelmässiger Form
-// aus MEHREREN getrennten Meshes bestehen (siehe raumKlickflaechenErstellen, eines pro Aussenkontur),
-// die alle dieselbe zeile in userData.zeile tragen - deshalb ein Array statt eines einzelnen Meshes,
-// sonst blieben Teile des Raums unmarkiert ("abgeschnitten").
-let ausgewaehlteRaumMeshes = [];
+// Liefert den geometry.groups-Index, in dessen Dreiecksbereich faceIndex (von Raycaster.intersectObjects
+// gelieferter Dreieck-Index) fällt - group.start/count sind in Index-Array-Einheiten (3 pro Dreieck),
+// siehe raumKlickflaechenErstellen. Analog zu userData.zeilen[segmentIndex] bei den Umfassungslinien,
+// nur dass hier wegen der Mehrfarbigkeit (Klick-Highlight/Subtyp-Filter, siehe RAUM_MATERIALIEN_ARRAY)
+// zusätzlich der Gruppen-Index gebraucht wird, nicht nur die Zeile selbst.
+function raumGruppenIndexVonFace(mesh, faceIndex) {
+  const gruppen = mesh.geometry.groups;
+  const zielIndex = faceIndex * 3;
+  for (let i = 0; i < gruppen.length; i++) {
+    const gruppe = gruppen[i];
+    if (zielIndex >= gruppe.start && zielIndex < gruppe.start + gruppe.count) return i;
+  }
+  return -1;
+}
+
+// Aktuell farblich markierte Raum-Gruppen (materialIndex highlight statt standard), falls gerade ein
+// Raum ausgewählt ist - siehe Klick-Handler unten. Ein Raum kann bei unregelmässiger Form aus MEHREREN
+// geometry.groups bestehen (siehe raumKlickflaechenErstellen, eine pro Aussenkontur), die alle
+// dasselbe zeile-Objekt in userData.raeume[gruppenIndex] tragen - deshalb ein Array aus
+// { mesh, gruppenIndex } statt eines einzelnen Eintrags, sonst blieben Teile des Raums unmarkiert
+// ("abgeschnitten").
+let ausgewaehlteRaumGruppen = [];
 
 // Rohe Zeile des zuletzt angeklickten Elements (Linie oder Raum-Klickfläche), unabhängig davon ob es
 // sich um einen Raum handelt oder nicht - für die Isolierung per Taste I (siehe dort).
@@ -1307,8 +1375,10 @@ let ausgewaehlteZeile = null;
 let isolierung = null;
 
 function raumAuswahlAufheben() {
-  for (const mesh of ausgewaehlteRaumMeshes) mesh.material = raumKlickflaecheMaterial;
-  ausgewaehlteRaumMeshes = [];
+  for (const { mesh, gruppenIndex } of ausgewaehlteRaumGruppen) {
+    mesh.geometry.groups[gruppenIndex].materialIndex = RAUM_MATERIAL_INDEX.standard;
+  }
+  ausgewaehlteRaumGruppen = [];
 }
 
 renderer.domElement.addEventListener("click", (e) => {
@@ -1335,23 +1405,37 @@ renderer.domElement.addEventListener("click", (e) => {
 
   const naechsterTreffer = treffer[0];
   const getroffenesObjekt = naechsterTreffer.object;
-  // Linien (Line2) haben userData.zeilen (eine Zeile pro Segment-Index), die neuen unsichtbaren
-  // Raum-Klickflächen (siehe raumKlickflaechenErstellen) je ein eigenes Mesh mit userData.zeile.
-  const zeile = getroffenesObjekt.userData.zeile ?? getroffenesObjekt.userData.zeilen[naechsterTreffer.faceIndex];
+  // Linien (Line2) haben userData.zeilen (eine Zeile pro Segment-Index), die gemergten unsichtbaren
+  // Raum-Klickflächen (siehe raumKlickflaechenErstellen) userData.raeume (eine Zeile pro
+  // geometry.groups-Index) - der passende Gruppen-Index kommt aus dem getroffenen Dreieck.
+  const istRaumMesh = !!getroffenesObjekt.userData.raeume;
+  const gruppenIndex = istRaumMesh ? raumGruppenIndexVonFace(getroffenesObjekt, naechsterTreffer.faceIndex) : -1;
+  const zeile = istRaumMesh
+    ? getroffenesObjekt.userData.raeume[gruppenIndex]
+    : getroffenesObjekt.userData.zeilen[naechsterTreffer.faceIndex];
   ausgewaehlteZeile = zeile;
 
-  // Farbliche Markierung nur für Räume (eigenes Mesh, erkennbar an userData.zeile) - erneuter Klick
-  // auf denselben Raum hebt die Markierung wieder auf, Klick auf einen anderen Raum (oder eine Linie)
-  // wechselt sie. Markiert werden ALLE Meshes mit derselben zeile (siehe raumKlickflaechenErstellen -
-  // ein Raum kann bei unregelmässiger Form aus mehreren Aussenkonturen/Meshes bestehen), nicht nur das
-  // vom Raycaster getroffene, sonst blieben Teile des Raums unmarkiert.
-  if (getroffenesObjekt.userData.zeile && ausgewaehlteRaumMeshes.includes(getroffenesObjekt)) {
+  // Farbliche Markierung nur für Räume (erkennbar an userData.raeume) - erneuter Klick auf denselben
+  // Raum hebt die Markierung wieder auf, Klick auf einen anderen Raum (oder eine Linie) wechselt sie.
+  // Markiert werden ALLE Gruppen mit derselben zeile im selben Mesh (siehe raumKlickflaechenErstellen -
+  // ein Raum kann bei unregelmässiger Form aus mehreren Aussenkonturen/Gruppen bestehen, aber immer
+  // innerhalb derselben Geschoss-Gruppe/desselben Meshes), nicht nur die vom Raycaster getroffene,
+  // sonst blieben Teile des Raums unmarkiert.
+  const bereitsAusgewaehlt = ausgewaehlteRaumGruppen.some(
+    (a) => a.mesh === getroffenesObjekt && a.gruppenIndex === gruppenIndex
+  );
+  if (istRaumMesh && bereitsAusgewaehlt) {
     raumAuswahlAufheben();
   } else {
     raumAuswahlAufheben();
-    if (getroffenesObjekt.userData.zeile) {
-      ausgewaehlteRaumMeshes = klickbareObjekte.filter((objekt) => objekt.userData.zeile === zeile);
-      for (const mesh of ausgewaehlteRaumMeshes) mesh.material = raumHighlightMaterial;
+    if (istRaumMesh) {
+      const raeume = getroffenesObjekt.userData.raeume;
+      ausgewaehlteRaumGruppen = raeume
+        .map((r, i) => (r === zeile ? { mesh: getroffenesObjekt, gruppenIndex: i } : null))
+        .filter(Boolean);
+      for (const { mesh, gruppenIndex: i } of ausgewaehlteRaumGruppen) {
+        mesh.geometry.groups[i].materialIndex = RAUM_MATERIAL_INDEX.highlight;
+      }
     }
   }
 
@@ -1359,10 +1443,12 @@ renderer.domElement.addEventListener("click", (e) => {
   // <strong>  = bolt </strong>
 
   infobox.innerHTML = `
-    <strong>${zeile.entitaet_subtyp ?? "–"}</strong><br>
-    Gebäude-ID: ${zeile.gebaeude_id ?? "–"}<br>
-    Geschoss: ${zeile.geschoss_label ?? "–"}<br>
-    Fläche: ${(zeile.entitaet_typ === "Raum" || zeile.entitaet_typ === "Geschossfläche") ? zeile.flaeche + " m2" : ""}<br>
+    <strong>${zeile.entitaet_subtyp ?? "–"}</strong>
+    <div class="infobox-tabelle">
+      <span>Gebäude-ID:</span><span>${zeile.gebaeude_id ?? "–"}</span>
+      <span>Geschoss:</span><span>${zeile.geschoss_label ?? "–"}</span>
+      <span>Fläche:</span><span>${(zeile.entitaet_typ === "Raum" || zeile.entitaet_typ === "Geschossfläche") ? zeile.flaeche + " m2" : ""}</span>
+    </div>
   `;
   infobox.style.left = `${e.clientX + 12}px`;
   infobox.style.top = `${e.clientY + 12}px`;
@@ -1531,9 +1617,9 @@ function linienSichtbarkeitAnwenden(gruppe) {
   if (gruppe.entitaetTyp !== "Geschossfläche") {
     // Raum/Öffnung/Ausstattung: unverändert nur abhängig von Filter + Zoomstufe, alle Geschosse gleich.
     gruppe.linien.visible = gruppe.gefiltertSichtbar && detailSichtbar;
-    // Klickflächen (nur bei Raum vorhanden, siehe raumKlickflaechenErstellen) folgen derselben
-    // Sichtbarkeit wie die Umfassungslinie - ein Raum ist genau dann anklickbar, wenn er auch gezeichnet wird.
-    for (const mesh of gruppe.klickflaechen) mesh.visible = gruppe.linien.visible;
+    // Klickfläche (nur bei Raum vorhanden, siehe raumKlickflaechenErstellen) folgt derselben
+    // Sichtbarkeit wie die Umfassungslinie - Räume sind genau dann anklickbar, wenn sie auch gezeichnet werden.
+    if (gruppe.klickflaeche) gruppe.klickflaeche.visible = gruppe.linien.visible;
     return;
   }
 
@@ -1575,10 +1661,6 @@ function gebaeudeDimmingAktualisieren(matchAnzahlProGebaeude, ausgewaehlteGescho
       gruppe.material.opacity = dimmen ? 0 : 1;
       gruppe.gefiltertSichtbar = !dimmen;
       linienSichtbarkeitAnwenden(gruppe);
-    }
-
-    if (gebaeude.wohnungenAnzahl > 0) {
-      gebaeude.overlayElement.style.display = dimmenGebaeude ? "none" : "";
     }
   }
 }
@@ -1724,6 +1806,18 @@ for (const dim of ["kuechengroesse", "esszimmergroesse", "wohnenSchlafenGroesse"
   });
 }
 
+// Gemeinsame Material-Palette für ALLE gemergten Raum-Klickflächen-Meshes (siehe
+// raumKlickflaechenErstellen) - welche Farbe ein einzelner Raum zeigt, steuert nicht mehr
+// mesh.material (ein Mesh enthält jetzt viele Räume), sondern geometry.groups[i].materialIndex,
+// als Index in dieses Array.
+const RAUM_MATERIALIEN_ARRAY = [
+  raumKlickflaecheMaterial, // Index 0: Standard (unsichtbar, nur Klick)
+  raumHighlightMaterial, // Index 1: Klick-Auswahl (rot)
+  ...Object.values(ZIMMER_SUBTYP_MATERIALIEN), // Index 2+: pro Zimmer-Dimension
+];
+const RAUM_MATERIAL_INDEX = { standard: 0, highlight: 1 };
+Object.keys(ZIMMER_SUBTYP_MATERIALIEN).forEach((dim, i) => (RAUM_MATERIAL_INDEX[dim] = i + 2));
+
 function raumSubtypMarkierungAktualisieren() {
   for (const dim in ZIMMER_SUBTYP_MATERIALIEN) {
     if (filterAuswahl[dim].size > 0) {
@@ -1732,20 +1826,24 @@ function raumSubtypMarkierungAktualisieren() {
   }
 
   for (const mesh of alleRaumKlickflaechen) {
-    if (ausgewaehlteRaumMeshes.includes(mesh)) continue; // Klick-Auswahl (rot) hat Vorrang, hier nicht anfassen
+    const raeume = mesh.userData.raeume;
+    for (let i = 0; i < raeume.length; i++) {
+      // Klick-Auswahl (rot) hat Vorrang, hier nicht anfassen
+      if (ausgewaehlteRaumGruppen.some((a) => a.mesh === mesh && a.gruppenIndex === i)) continue;
 
-    const zeile = mesh.userData.zeile;
-    const moeglicheDims = ZIMMER_SUBTYP_ZU_DIMENSIONEN[zeile.entitaet_subtyp];
-    const aktiveDim = moeglicheDims && moeglicheDims.find((dim) => filterAuswahl[dim].size > 0);
+      const zeile = raeume[i];
+      const moeglicheDims = ZIMMER_SUBTYP_ZU_DIMENSIONEN[zeile.entitaet_subtyp];
+      const aktiveDim = moeglicheDims && moeglicheDims.find((dim) => filterAuswahl[dim].size > 0);
 
-    if (!aktiveDim) {
-      mesh.material = raumKlickflaecheMaterial;
-      continue;
+      let index = RAUM_MATERIAL_INDEX.standard;
+      if (aktiveDim) {
+        const wohnung = wohnungenNachId.get(zeile.wohnungs_id);
+        if (wohnung && wohnungPasstZuFiltern(wohnung, null) && wohnungPasstZuIsolierung(wohnung)) {
+          index = RAUM_MATERIAL_INDEX[aktiveDim];
+        }
+      }
+      mesh.geometry.groups[i].materialIndex = index;
     }
-    const wohnung = wohnungenNachId.get(zeile.wohnungs_id);
-    mesh.material = wohnung && wohnungPasstZuFiltern(wohnung, null) && wohnungPasstZuIsolierung(wohnung)
-      ? ZIMMER_SUBTYP_MATERIALIEN[aktiveDim]
-      : raumKlickflaecheMaterial;
   }
 }
 
@@ -2203,7 +2301,7 @@ function vertikalesDiagrammRendern(dim, svg, keys, labelOf, colorOf, gefiltertZa
         rx: 4,
         fill: farbe,
         "fill-opacity": "0.18",
-        stroke: istAusgewaehlt ? farbe : "var(--border)",
+        stroke: istAusgewaehlt ? farbe : "var(--layout-linie)",
         "stroke-width": istAusgewaehlt ? "2" : "1",
         ...(istAusgewaehlt && { "stroke-opacity": "0.6" }),
       })
@@ -2285,7 +2383,7 @@ function diagrammRendern(dim) {
         rx: 4,
         fill: farbe,
         "fill-opacity": "0.18",
-        stroke: istAusgewaehlt ? farbe : "var(--border)",
+        stroke: istAusgewaehlt ? farbe : "var(--layout-linie)",
         "stroke-width": istAusgewaehlt ? "2" : "1",
         ...(istAusgewaehlt && { "stroke-opacity": "0.6" }),
       })
