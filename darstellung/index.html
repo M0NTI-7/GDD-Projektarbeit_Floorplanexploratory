@@ -65,7 +65,7 @@
       display: none;
       position: fixed;
       z-index: 10;
-      background: var(--layout-linie);
+      background: var(--layout-hintergrund);
       border: 1px solid var(--layout-stiftfarbe-schwarz);
       border-radius: 3px;
       padding: 14px 8px 8px 8px;
@@ -84,13 +84,21 @@
       margin-top: 6px;
     }
 
+
+
+
+
+
+
+
+
+
     /* --------------------------------------------------------------------------------------------
     
-    ZIEL Akt 1: Vollbild-Ladebildschirm, deckt Szene komplett ab, solange die CSV geladen/geparst wird.
-       Verschwindet per Crossfade sobald gebaeudeDarstellen fertig ist. 
+      ZIEL Akt 1: Vollbild-Ladebildschirm, deckt Szene komplett ab, solange die CSV geladen/geparst wird.
+      Verschwindet per Crossfade sobald gebaeudeDarstellen fertig ist. 
        
-       splash kommt von Splash Screen und ist sowas wie der code für diesen Fachbegriff des Ladebildschirms
-       
+      ! splash kommt von Splash Screen und ist sowas wie der Code für diesen Fachbegriff des Ladebildschirms
 
     -------------------------------------------------------------------------------------------- */
 
@@ -120,6 +128,15 @@
       color: var(--layout-stiftfarbe-schwarz);
     }
 
+    #splash-lead-frage {
+      margin: 0 0 12px;
+      max-width: 480px;
+      font-size: 19px;
+      font-weight: 600;
+      line-height: 1.4;
+      color: var(--layout-stiftfarbe-schwarz);
+    }
+
     #splash-lead {
       margin: 0;
       max-width: 480px;
@@ -134,15 +151,16 @@
       color: var(--layout-stiftfarbe-braun);
     }
 
+
+
+
+
+
     /* --------------------------------------------------------------------------------------------
 
     ZIEL: Filter sind platziert und definiert
 
-
-
-
     -------------------------------------------------------------------------------------------- */
-
 
     .filter-leiste {
       position: fixed;
@@ -150,7 +168,7 @@
       left: 0;
       right: 0;
       z-index: 20;
-      height: var(--header-hoehe); /* fix - das aufklappbare Dropdown schwebt darüber (.filter-slot-dropdown), damit sich die Leistenhöhe und damit die Canvas-Position NIE ändert */
+      height: var(--header-hoehe);
       display: flex;
       align-items: stretch;
       box-sizing: border-box;
@@ -170,29 +188,25 @@
       border-right: none;
     }
 
-    /* Breite ergibt sich aus dem Inhalt (Label + Chart-Breite unten + Innenabstand) statt aus einem
-       geraten Fixwert - dadurch schliesst die Spalte immer bündig mit dem Chart ab, kein Leerraum bis
-       zum nächsten Slot (FLOORPLANEXPLORATORY). Label und Chart stehen nebeneinander (row), nicht
-       gestapelt. */
+    .filter-slot-label {
+      margin: 0 0 8px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
     .filter-slot--geschoss {
-      position: relative; /* Bezugspunkt für .filter-slot-panel (top:100%) */
-      flex: 0 0 120px; /* fixe Breite statt auto - seit .filter-slot-panel position:absolute ist, trägt sie
-        nicht mehr zur auto-Breitenberechnung bei (zählt nur noch das schmale Label), muss also hier
-        selbst reserviert werden (Padding 16+16 + Label ~24 + Margin 8 + Chart 160 ≈ 200px) */
+      position: relative;
+      flex: 0 0 120px;
       display: flex;
       flex-direction: row;
     }
 
-    /* Label steht vertikal, von unten nach oben lesbar (rotate(180deg) dreht die von vertical-rl
-       standardmässig oben-nach-unten lesbare Textrichtung um) - align-self: center zentriert es neben
-       dem Chart, statt es (wie der Rest der Reihe per Default) auf die volle Höhe zu strecken. Ist ein
-       <button> (Toggle wie bei den Tab-Gruppen), deshalb Browser-Standardstil zurückgesetzt. */
     .filter-slot--geschoss .filter-slot-label {
       writing-mode: vertical-rl;
-      transform: rotate(180deg);
+      transform: rotate(180deg); /* Text is von unten nach oben lesbar */
       align-self: center;
       margin: 0 8px 0 0;
-      font: inherit;
+      font: inherit; /* inherit = gleicher wert wie Elternelement */
       font-weight: 700;
       border: none;
       background: none;
@@ -201,10 +215,6 @@
       cursor: pointer;
     }
 
-    /* Schwebt über dem Canvas statt die Leiste zu vergrössern - genau wie .filter-slot-dropdown bei
-       den Tab-Gruppen, mit demselben Auf-/Zuklappen (.eingeklappt), nur ohne Höhenlimit: 100vh ist
-       absichtlich grosszügiger als jedes Fenster, der Überschuss wird von overflow:hidden auf body
-       ohnehin abgeschnitten - einfacher als die exakte Resthöhe zu berechnen. */
     .filter-slot--geschoss.eingeklappt .filter-slot-panel {
       display: none;
     }
@@ -214,57 +224,26 @@
       left: 1px; /* Korrektur für Rundungsdifferenz bei fraktionalen Flexbox-Breiten */
       top: 100%;
       width: 100%;
-      height: 100vh;
+      height: 50vh;
       box-sizing: border-box;
       padding: 16px;
       background: var(--layout-hintergrund);
-      border-right: 1px solid var(--layout-linie); /* setzt Geschoss's eigene Trennlinie zu .filter-slot--kopf nach unten fort */
+      border-right: 1px solid var(--layout-linie);
     }
 
     .filter-slot--geschoss .chart-card {
       height: 100%;
     }
 
-    /* Eigene SVG-Grösse statt der allgemeinen .chart-svg-Regel (width:100%/height:auto/aspect-ratio) -
-       füllt Breite UND Höhe des Panels komplett aus. preserveAspectRatio="none" im HTML (statt des
-       SVG-Standards "xMidYMid meet") streckt den Chart-Inhalt dabei exakt auf diese Boxgrösse, ohne
-       Seitenverhältnis beizubehalten - sonst würde der Inhalt bei diesem schmal-hohen Format nur
-       verkleinert mittig sitzen (siehe Diskussion oben zu preserveAspectRatio). */
     .filter-slot--geschoss .chart-svg {
       width: 100%; /* passt sich der tatsächlichen Spaltenbreite an, statt einen festen Wert vorzugeben */
       height: 100%;
       aspect-ratio: auto;
     }
 
-    /* Schwebt über dem Canvas statt die Leiste zu vergrössern - Auf-/Zuklappen verändert dadurch NIE
-       die reservierte Höhe der Leiste (und damit die Canvas-Position/-Grösse), nur die immer sichtbare
-       Kopfzeile bestimmt --oberer-rand. top:100% verankert die Box direkt UNTERHALB der ganzen Spalte
-       (wächst nach unten in den Canvas hinein - oberhalb der Leiste ist am Bildschirmrand kein Platz). */
-    .filter-slot-dropdown {
-      position: absolute;
-      left: -1px; /* Korrektur für Rundungsdifferenz bei fraktionalen Flexbox-Breiten (flex: 1 1 0) */
-      top: 100%;
-      width: 100%; /* exakt so breit wie die Spalte selbst, damit border-left unten nahtlos zur Trennlinie oben passt */
-      box-sizing: border-box;
-      padding: 16px;
-      background: var(--layout-hintergrund); /* gleiche Farbe wie .filter-leiste, damit es wie EIN zusammenhängendes Feld wirkt statt einer separaten Karte */
-      border-left: 1px solid var(--layout-linie); /* setzt die Trennlinie der VORHERIGEN Spalte (deren border-right) nach unten fort */
-    }
-
-    .filter-slot--tabs.eingeklappt .filter-slot-dropdown {
-      display: none;
-    }
-
     .filter-slot--kopf {
-      flex: 0 1 320px;
-      min-width: 220px;
-    }
-
-    #kopf-titel {
-      margin: 0 0 10px;
-      font-size: 20px;
-      font-weight: 600;
-      color: var(--layout-stiftfarbe-schwarz);
+      flex: 0 1 480px;
+      min-width: 360px;
     }
 
     .filter-header {
@@ -276,56 +255,34 @@
     }
 
     .filter-stats {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
+      max-width: 320px;
     }
 
-    .filter-header button {
-      font: inherit;
-      font-weight: 600;
-      padding: 8px 14px;
-      border: none;
-      border-radius: 8px;
-      background: var(--layout-stiftfarbe-dunkelbraun);
-      color: var(--layout-hintergrund);
-      cursor: pointer;
-      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
-      transition: transform 0.15s ease, box-shadow 0.15s ease;
+    .filter-slot-dropdown {
+      position: absolute;
+      left: -1px; /* Korrektur für Rundungsdifferenz bei fraktionalen Flexbox-Breiten (flex: 1 1 0) */
+      top: 100%;
+      width: 100%; /* exakt so breit wie die Spalte selbst, damit border-left unten nahtlos zur Trennlinie oben passt */
+      box-sizing: border-box;
+      padding: 16px;
+      background: var(--layout-hintergrund);
+      border-left: 1px solid var(--layout-linie); /* setzt die Trennlinie der VORHERIGEN Spalte (deren border-right) nach unten fort */
     }
 
-    .filter-header button:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
-    }
-
-    .filter-header button:disabled {
-      opacity: 0.4;
-      cursor: default;
-      transform: none;
-      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+    .filter-slot--tabs.eingeklappt .filter-slot-dropdown {
+      display: none;
     }
 
     .filter-slot--tabs {
-      position: relative; /* Bezugspunkt für .filter-slot-dropdown (top:100%) */
+      position: relative;
       flex: 1 1 0;
       min-width: 220px;
       display: flex;
       flex-direction: column;
       justify-content: flex-end;
-      padding-bottom: 4px; /* überschreibt das von .filter-slot geerbte 14px, damit das Label näher am unteren Rand sitzt */
+      padding-bottom: 4px; /* überschreibt 14px, damit das Label näher am unteren Rand sitzt */
     }
 
-    .filter-slot-label {
-      margin: 0 0 8px;
-      font-size: 13px;
-      font-weight: 700;
-    }
-
-    /* Gebäude/Wohnungen/Zimmer: Label ist ein <button> und klappt (siehe main.js) nur den eigenen
-       .filter-slot-body auf/zu, unabhängig von den anderen beiden Slots. Pfeil zeigt im
-       eingeklappten Zustand nach unten ("mehr Inhalt darunter, hier klicken") und dreht sich beim
-       Aufklappen nach oben. */
     .filter-slot--tabs .filter-slot-label {
       display: flex;
       align-items: center;
@@ -353,7 +310,7 @@
     .filter-tabs {
       display: flex;
       flex-wrap: wrap;
-      align-items: flex-end; /* sonst würde jeder Tab auf die Höhe des längsten Kürzels gestreckt (CSS-Standard: stretch) */
+      align-items: stretch;
       gap: 4px;
       margin-bottom: 8px;
     }
@@ -404,20 +361,29 @@
       transform: translate(12px, 12px);
     }
 
+    #kopf-titel {
+      margin: 10px 0 0;
+      font-size: 20px;
+      font-weight: 600;
+      color: var(--layout-stiftfarbe-schwarz);
+      cursor: pointer;
+      user-select: none;
+    }
+
+    #kopf-titel[aria-disabled="true"] {
+      cursor: default;
+    }
+
+
 
     /* --------------------------------------------------------------------------------------------
 
     ZIEL: Grafiken sind platziert und gestalten
 
-
-
     -------------------------------------------------------------------------------------------- */
 
-
-    .chart-card h3 {
-      margin: 0 0 12px;
-      font-size: 12px;
-      font-weight: 100;
+    .filter-slot-body .chart-card h3 {
+      display: none;
     }
 
     .chart-svg {
@@ -439,6 +405,12 @@
       stroke: var(--layout-stiftfarbe-schwarz);
       stroke-width: 1;
     }
+
+    .chart-svg .geschoss-trennlinie {
+      stroke: var(--layout-stiftfarbe-schwarz);
+      stroke-width: 0.5;
+      stroke-dasharray: 15 20;
+    }
   </style>
 </head>
 
@@ -458,9 +430,9 @@
 
   <div id="splash">
     <h1 id="splash-titel">FLOORPLANEXPLORATORY</h1>
+    <p id="splash-lead-frage">Wie wohnt die Schweiz?</p>
     <p id="splash-lead">
-      Vergleichende Übersicht von Grundrissen Zürcher Wohnbaugenossenschaften, basierend auf
-      «Wohngenossenschaften in Zürich. Gartenstädte und neue Nachbarschaften» (Dominique Boudet, Hg.).
+      Entdecke, wie unterschiedlich Wohnraum in der Schweiz gebaut wird, von kompakten Einzimmerwohnungen bis zu Grosswohnungen mit über zehn Zimmern. Drehe, zoome und filtere, um jede Wohnung einzeln zu betrachten oder mit tausenden anderen zu vergleichen.
     </p>
     <p id="splash-fortschritt">Lädt…</p>
   </div>
@@ -477,14 +449,12 @@
     </div>
 
     <div class="filter-slot filter-slot--kopf">
-      <h1 id="kopf-titel">FLOORPLANEXPLORATORY</h1>
       <div class="filter-header">
         <div class="filter-stats">
-          <div><span id="stat-gebaeude-count">0</span> / <span id="stat-gebaeude-total">0</span> Gebäude</div>
-          <div><span id="stat-count">0</span> / <span id="stat-total">0</span> Wohnungen</div>
+          Deine Auswahl zeigt <span id="stat-count">0</span> von <span id="stat-total">0</span> Wohnungen, verteilt auf <span id="stat-gebaeude-count">0</span> von <span id="stat-gebaeude-total">0</span> Gebäuden.
         </div>
-        <button id="filter-reset" disabled>back</button>
       </div>
+      <h1 id="kopf-titel" role="button" tabindex="0" aria-disabled="true">FLOORPLANEXPLORATORY</h1>
     </div>
 
     <div class="filter-slot filter-slot--tabs eingeklappt" data-slot="gebaeude">
@@ -492,32 +462,32 @@
         <nav class="filter-tabs"></nav>
         <div class="filter-slot-body">
 
-          <div class="chart-card" data-dim="gf" data-kuerzel="GF">
+          <div class="chart-card" data-dim="gf">
             <h3>Geschossfläche</h3>
             <svg class="chart-svg" viewBox="0 0 400 220"></svg>
           </div>
 
-          <div class="chart-card" data-dim="hnfAnteil" data-kuerzel="HNF">
-            <h3>Anteil Hauptnutzfläche an Geschossfläche</h3>
+          <div class="chart-card" data-dim="hnfAnteil">
+            <h3>Anteil HNF an GF</h3>
             <svg class="chart-svg" viewBox="0 0 400 220"></svg>
           </div>
 
-          <div class="chart-card" data-dim="wohnungen" data-kuerzel="WHGb">
-            <h3>Anzahl Wohnungen pro Gebäude</h3>
+          <div class="chart-card" data-dim="wohnungen">
+            <h3>Anzahl WHG pro Gebäude</h3>
             <svg class="chart-svg" viewBox="0 0 400 220"></svg>
           </div>
 
-          <div class="chart-card" data-dim="anzahlWohnungenProGeschoss" data-kuerzel="WHGg">
-            <h3>Anzahl Wohnungen pro Geschoss</h3>
+          <div class="chart-card" data-dim="anzahlWohnungenProGeschoss">
+            <h3>Anzahl WHG pro Geschoss</h3>
             <svg class="chart-svg" viewBox="0 0 400 220"></svg>
           </div>
 
-          <div class="chart-card" data-dim="gebaeudetiefe" data-kuerzel="bTiefe">
+          <div class="chart-card" data-dim="gebaeudetiefe">
             <h3>Gebäudetiefe</h3>
             <svg class="chart-svg" viewBox="0 0 400 220"></svg>
           </div>
 
-          <div class="chart-card" data-dim="geschossigkeit" data-kuerzel="ANZg">
+          <div class="chart-card" data-dim="geschossigkeit">
             <h3>Anzahl Geschosse</h3>
             <svg class="chart-svg" viewBox="0 0 400 220"></svg>
           </div>
@@ -532,17 +502,17 @@
         <nav class="filter-tabs"></nav>
         <div class="filter-slot-body">
 
-          <div class="chart-card" data-dim="wohnungsgroesse" data-kuerzel="WHG">
+          <div class="chart-card" data-dim="wohnungsgroesse">
             <h3>Wohnungsfläche</h3>
             <svg class="chart-svg" viewBox="0 0 400 220"></svg>
           </div>
 
-          <div class="chart-card" data-dim="zimmer" data-kuerzel="ZI Stk">
+          <div class="chart-card" data-dim="zimmer">
             <h3>Zimmer pro Wohnung</h3>
             <svg class="chart-svg" viewBox="0 0 400 220"></svg>
           </div>
 
-          <div class="chart-card" data-dim="anzahlBadezimmer" data-kuerzel="NZ Stk">
+          <div class="chart-card" data-dim="anzahlBadezimmer">
             <h3>Nasszellen pro Wohnung</h3>
             <svg class="chart-svg" viewBox="0 0 400 220"></svg>
           </div>
@@ -557,32 +527,32 @@
         <nav class="filter-tabs"></nav>
         <div class="filter-slot-body">
 
-          <div class="chart-card" data-dim="wohnenSchlafenGroesse" data-kuerzel="ZI">
+          <div class="chart-card" data-dim="wohnenSchlafenGroesse">
             <h3>Zimmerfläche</h3>
             <svg class="chart-svg" viewBox="0 0 400 220"></svg>
           </div>
 
-          <div class="chart-card" data-dim="kuechengroesse" data-kuerzel="KÜ">
+          <div class="chart-card" data-dim="kuechengroesse">
             <h3>Küchenfläche</h3>
             <svg class="chart-svg" viewBox="0 0 400 220"></svg>
           </div>
 
-          <div class="chart-card" data-dim="esszimmergroesse" data-kuerzel="EZ">
+          <div class="chart-card" data-dim="esszimmergroesse">
             <h3>Esszimmerfläche</h3>
             <svg class="chart-svg" viewBox="0 0 400 220"></svg>
           </div>
 
-          <div class="chart-card" data-dim="nasszellengroesse" data-kuerzel="NZ">
+          <div class="chart-card" data-dim="nasszellengroesse">
             <h3>Nasszellenfläche</h3>
             <svg class="chart-svg" viewBox="0 0 400 220"></svg>
           </div>
 
-          <div class="chart-card" data-dim="reduitgroesse" data-kuerzel="RE">
+          <div class="chart-card" data-dim="reduitgroesse">
             <h3>Reduitfläche</h3>
             <svg class="chart-svg" viewBox="0 0 400 220"></svg>
           </div>
 
-          <div class="chart-card" data-dim="balkongroesse" data-kuerzel="BA">
+          <div class="chart-card" data-dim="balkongroesse">
             <h3>Balkonfläche</h3>
             <svg class="chart-svg" viewBox="0 0 400 220"></svg>
           </div>
