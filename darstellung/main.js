@@ -4,11 +4,21 @@
 
 // --------------------------------------------------------------------------------
 
-import * as THREE from "three";
+import * as THREE from "three"; // Importiert die ganze Three.js-Bibliothek als ein grosses Objekt mit ganz vielen Klassen
 import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
 import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
+
+
+
+
+
+
+
+
+
 
 // --------------------------------------------------------------------------------
 
@@ -16,27 +26,25 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
 // --------------------------------------------------------------------------------
 
-const stiftfarbeUmfassungslinie = {
-  "Geschossfläche": new LineMaterial({ color: "#000000", linewidth: 2 }), // Dicke: 2px, Füllung keine ???, Farbe: schwarz
-  "Raum": new LineMaterial({ color: "#000000", linewidth: 2 }),
-  "Öffnung": new LineMaterial({ color: "#000000", linewidth: 1 }),
-  "Ausstattung": new LineMaterial({ color: "#000000", linewidth: 1 }),
+const stiftfarbeUmfassungslinie = { // { } definiert ein Objekt wie ein Nachschlagewerk/Lexikon. stiftfarbeUmfassungslinie["Raum"] schlägt den Schlüssel "Raum" nach und gibt den dazugehörigen Wert zurück.
+  "Geschossfläche": new LineMaterial({ color: "#000000", linewidth: 2 }), // Dicke: 2px, Farbe: schwarz
+  "Raum":           new LineMaterial({ color: "#000000", linewidth: 2 }),
+  "Öffnung":        new LineMaterial({ color: "#000000", linewidth: 1 }),
+  "Ausstattung":    new LineMaterial({ color: "#000000", linewidth: 1 }),
 };
 
-// Pro Gebäude und Zeilentyp ein eigener Material-Klon von stiftfarbeUmfassungslinie (statt ein
-// einziges Material pro Typ für alle Gebäude gemeinsam) -> jedes Gebäude kann seine eigenen Linien
-// unabhängig ein-/ausblenden (siehe gebaeudeDimmingAktualisieren), ohne die anderer Gebäude zu berühren.
-const gebaeudeLinienMaterialien = []; // alle geklonten Materialien, für resize (siehe unten)
+const gebaeudeLinienMaterialien = []; // [ ] ein Array | eine geordnete Liste von Werten durchnummeriert von 0
+const alleWohnungsKreise = [];
+const alleZimmerKonturen = [];
 
-const flaechenfarbenSia416farben = {
-  "HNF": "#c0392b",
-  "NNF": "#e08214",
-  "VF": "#f1c40f",
-  "FF": "#2e86c1",
-  "KFT": "#7b4b2a",
-  "KFN": "#c08a3e",
-  "ANF": "#2ecc71", // Farbe stimmt noch nicht ????
-};
+
+
+
+
+
+
+
+
 
 // --------------------------------------------------------------------------------
 
@@ -44,116 +52,332 @@ const flaechenfarbenSia416farben = {
 
 // --------------------------------------------------------------------------------
 
-const scene = new THREE.Scene();
-// Kein scene.background -> Canvas bleibt transparent, der weisse "Papier"-Hintergrund kommt jetzt
-// von der Seite (siehe index.html), damit die Donut-Overlays dahinter sichtbar durchscheinen können.
+const scene = new THREE.Scene(); // holt den Szene-Bauplan aus THREE-Objekt und new THREE.Scene() erzeugt danach eine neue leere Szene-Instanz
+
+let obererRandPx = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--oberer-rand")) || 0;
+  // parseFloat formt den Wert von "--oberer-rand" in eine Zahl um
+  // getComputedStyle berechnet alle aktuell geltenden CSS-Werte für das <html>-Element
+  // document.documentElement zeigt auf das <html> Element | document selbst auf das html und .documentElement auf das Element :root
+  // .getPropertyValue("--oberer-rand") ist das var(--oberer-rand) vom CSS-Syntax
+  // || 0 ist die Rückfallebene falls es kein Wert bei "--oberer-rand" hat
+
+function canvasBreite() {
+  return window.innerWidth;
+}
+
+function canvasHoehe() {
+  return window.innerHeight - obererRandPx;
+}
 
 let frustumSize = 50;
+let detailSichtbar = false;
+let kameraGeschwenkt = false;
+let positionierungFixiert = false;
 
-const aspect = window.innerWidth / window.innerHeight;
-const camera = new THREE.OrthographicCamera(
+const DETAIL_SCHWELLE_METER = 400; // Schwellenwert ab wann die einzelnen Räume dargestellt werden.
+const SCHWENK_SCHWELLE_RAD = THREE.MathUtils.degToRad(3);
+const STARTGESCHOSS_LABEL = "0101 | 01 OG";
+const KAMERA_FOV = 50; // Grad - Blickwinkel der Perspective-Kamera bei gekippter Ansicht
+const aspect = canvasBreite() / canvasHoehe();
+
+const kameraOrtho = new THREE.OrthographicCamera(
   (-frustumSize * aspect) / 2,
   (frustumSize * aspect) / 2,
   frustumSize / 2,
   -frustumSize / 2,
-  0.1, // alles was näher als 0.1 ist wird nicht dargestellt
-  1000 // alles was weiter weg als 1000 ist wird nicht dargestellt
+  0.01, // alles was näher als 0.1 ist wird nicht dargestellt
+  10000 // alles was weiter weg als 1000 ist wird nicht dargestellt
 );
+
+const kameraPerspektive = new THREE.PerspectiveCamera(KAMERA_FOV, aspect, 1, 10000);
+
+let camera = kameraOrtho;
 
 camera.position.set(0, 100, 0); // koordinatensystem = von vorne nicht wie CAD, Y ist die Höhe
 camera.lookAt(0, 0, 0);
 
 function kameraFrustumAktualisieren(aspect) {
-  camera.left = (-frustumSize * aspect) / 2;
-  camera.right = (frustumSize * aspect) / 2;
-  camera.top = frustumSize / 2;
-  camera.bottom = -frustumSize / 2;
-  camera.updateProjectionMatrix();
+  kameraOrtho.left = (-frustumSize * aspect) / 2;
+  kameraOrtho.right = (frustumSize * aspect) / 2;
+  kameraOrtho.top = frustumSize / 2;
+  kameraOrtho.bottom = -frustumSize / 2;
+  kameraOrtho.updateProjectionMatrix();
+
+  kameraPerspektive.aspect = aspect;
+  kameraPerspektive.updateProjectionMatrix();
+}
+
+function kameraDistanzFuerSichtbareHoehe(hoeheMeter) {
+  return hoeheMeter / (2 * Math.tan(THREE.MathUtils.degToRad(kameraPerspektive.fov / 2)));
+}
+
+// Wechselt die aktive Kamera und überträgt dabei Blickrichtung und sichtbare Höhe von der alten auf die neue Kamera, damit der Wechsel nicht sichtbar "springt".
+function kameraTypWechseln(neueKamera) {
+  if (neueKamera === camera) return;
+
+  const sichtbareHoeheMeter = sichtbareHoeheMeterAktuell();
+  const richtung = camera.position.clone().sub(controls.target).normalize();
+
+  if (neueKamera === kameraPerspektive) {
+    const distanz = kameraDistanzFuerSichtbareHoehe(sichtbareHoeheMeter);
+    kameraPerspektive.position.copy(controls.target).addScaledVector(richtung, distanz);
+  } else {
+    kameraOrtho.zoom = frustumSize / sichtbareHoeheMeter;
+    kameraOrtho.position.copy(camera.position);
+    kameraOrtho.updateProjectionMatrix();
+  }
+  neueKamera.lookAt(controls.target);
+
+  camera = neueKamera;
+  controls.object = camera;
+  controls.update();
 }
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true }); // alpha: Canvas-Hintergrund transparent statt opak
-renderer.setClearColor(0x000000, 0); // alpha:true allein reicht nicht, sonst clear'd Three.js weiterhin opak (Standard: Schwarz, Alpha 1)
-renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(window.devicePixelRatio); // greift die Pixel des Bildschirms ab für die schärfe
-document.body.appendChild(renderer.domElement); // braucht es damit überhaupt etwas darstellt
+renderer.setClearColor(0x000000, 0);
+renderer.setSize(canvasBreite(), canvasHoehe());
+renderer.setPixelRatio(window.devicePixelRatio);
+document.body.appendChild(renderer.domElement);
 
-for (const material of Object.values(stiftfarbeUmfassungslinie)) {
-  renderer.getSize(material.resolution);
+function linienMaterialAufloesungenAktualisieren() {
+  for (const material of Object.values(stiftfarbeUmfassungslinie)) renderer.getSize(material.resolution);
+  for (const material of gebaeudeLinienMaterialien) renderer.getSize(material.resolution);
 }
+
+linienMaterialAufloesungenAktualisieren();
+
+
+
+
+
+
+
+
+
+
 
 // Ziel: Die Kammerasteuerung ist korrekt eingestellt
 
 const controls = new OrbitControls(camera, renderer.domElement);
 
 controls.target.set(0, 0, 0);
-controls.zoomSpeed = 6; // Hier kann die Zoomgeschwindigkeit angepasst werden
-controls.zoomToCursor = true; // zoom direkt auf die Mausposition
+controls.zoomSpeed = 10; // Hier kann die Zoomgeschwindigkeit angepasst werden
+controls.zoomToCursor = true;
+controls.minDistance = 1;
+controls.maxDistance = 9000;
 controls.mouseButtons = {
   MIDDLE: THREE.MOUSE.PAN,
   RIGHT: THREE.MOUSE.ROTATE,
 };
 
-// Verhalten: Past die Zeichnung der Fenstergrösse an falls diese geändert wird
-
-window.addEventListener("resize", () => {
-  const aspect = window.innerWidth / window.innerHeight;
+function layoutAktualisieren() {
+  const aspect = canvasBreite() / canvasHoehe();
   kameraFrustumAktualisieren(aspect);
 
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  for (const material of Object.values(stiftfarbeUmfassungslinie)) {
-    renderer.getSize(material.resolution);
-  }
-  for (const material of gebaeudeLinienMaterialien) {
-    renderer.getSize(material.resolution);
-  }
-});
-
-// Verhalten: Hier wird pro Gebäude eine HTML-Overlay-Gruppe (Donut + Zimmer-Legende) auf die
-// projizierte Bildschirmposition der Gebäudemitte gesetzt und mit dem Kamera-Zoom skaliert. Als
-// CSS-Elemente statt Three.js-Meshes sind Donut, Zimmer-Text und -Kreise dadurch garantiert
-// konsistent zueinander positioniert (feste Pixel-Abstände zueinander), schrumpfen aber gemeinsam
-// mit den Gebäuden beim Rauszoomen statt bei jeder Zoomstufe gleich gross zu bleiben.
-
-const donutDurchmesserPx = 60; // einheitliche Bildschirmgrösse für alle Donuts
-
-const gebaeudeOverlays = []; // { position: THREE.Vector3, element: HTMLElement }
-
-function gebaeudeOverlayErstellen(mitteX, mitteZ, flaechePro416Kategorie, zimmerProWohnung) {
-  const element = document.createElement("div");
-  element.className = "gebaeude-overlay";
-
-  const donut = donutErstellen(flaechePro416Kategorie);
-  if (donut) element.appendChild(donut);
-
-  const legende = zimmerLegendeErstellen(zimmerProWohnung);
-  if (legende) element.appendChild(legende);
-
-  document.body.appendChild(element);
-  const position = new THREE.Vector3(mitteX, 0, mitteZ);
-  gebaeudeOverlays.push({ position, element });
-  return { element, position };
+  renderer.setSize(canvasBreite(), canvasHoehe());
+  linienMaterialAufloesungenAktualisieren();
 }
 
-function gebaeudeOverlaysAktualisieren() {
-  // camera.zoom ist 1 im Moment der Kamera-Zentrierung (siehe kameraAufGebaeudeZentrieren) und
-  // ändert sich beim Scrollen über OrbitControls. Als Skalierungsfaktor sorgt das dafür, dass die
-  // Overlays beim Rauszoomen mit den Gebäuden mitschrumpfen statt starr 60px zu bleiben und sich
-  // beim Reinzoomen entsprechend vergrössern. Nach unten begrenzt, damit sie nie unsichtbar werden.
-  const massstab = Math.max(0.15, camera.zoom);
+window.addEventListener("resize", layoutAktualisieren);
 
-  for (const { position, element } of gebaeudeOverlays) {
-    const projiziert = position.clone().project(camera);
-    element.style.left = `${((projiziert.x + 1) / 2) * window.innerWidth}px`;
-    element.style.top = `${((1 - projiziert.y) / 2) * window.innerHeight}px`;
-    element.style.transform = `scale(${massstab})`;
+
+
+
+
+
+
+
+
+
+// Ziel: Zoom und Kippwinkel der Kamera steuern Detailgrad, Kameratyp und Massstab der Darstellung
+
+function sichtbareHoeheMeterAktuell() {
+  if (camera === kameraOrtho) return frustumSize / kameraOrtho.zoom;
+  return 2 * camera.position.distanceTo(controls.target) * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+}
+
+// Wechsel der Grundrissdarstellung von Schwarzplan zu Grundriss
+
+function detailSichtbarkeitAktualisieren(erzwingen = false) {
+  const sichtbareHoeheMeter = sichtbareHoeheMeterAktuell();
+  const neuDetailSichtbar = sichtbareHoeheMeter <= DETAIL_SCHWELLE_METER;
+  if (!erzwingen && neuDetailSichtbar === detailSichtbar) return;
+
+  detailSichtbar = neuDetailSichtbar;
+  for (const gebaeude of gebaeudeNachId.values()) {
+    for (const gruppe of gebaeude.linienMaterialien) {
+      linienSichtbarkeitAnwenden(gruppe);
+    }
   }
+}
+
+function kameraSchwenkAktualisieren(erzwingen = false) {
+  const neuGeschwenkt = controls.getPolarAngle() > SCHWENK_SCHWELLE_RAD;
+  if (!erzwingen && neuGeschwenkt === kameraGeschwenkt) return;
+
+  kameraGeschwenkt = neuGeschwenkt;
+  kameraTypWechseln(kameraGeschwenkt ? kameraPerspektive : kameraOrtho);
+  for (const gebaeude of gebaeudeNachId.values()) {
+    for (const gruppe of gebaeude.linienMaterialien) {
+      linienSichtbarkeitAnwenden(gruppe);
+    }
+  }
+}
+
+
+
+
+
+
+
+
+
+// Ziel: WASD bewegt die Kamera zusätzlich zur Maussteuerung
+
+const wasdGedrueckt = new Set();
+
+window.addEventListener("keydown", (e) => {
+  const taste = e.key.toLowerCase();
+  if (taste === "w" || taste === "a" || taste === "s" || taste === "d") wasdGedrueckt.add(taste);
+});
+
+window.addEventListener("keyup", (e) => {
+  wasdGedrueckt.delete(e.key.toLowerCase());
+});
+
+const WASD_GESCHWINDIGKEIT_FAKTOR = 0.5; // Meter pro Sekunde, pro Meter sichtbarer Szenenhöhe - skaliert automatisch mit dem Zoom
+let letzterFrameZeitpunkt = performance.now();
+
+function wasdBewegungAnwenden() {
+  const jetzt = performance.now();
+  const deltaSekunden = (jetzt - letzterFrameZeitpunkt) / 1000;
+  letzterFrameZeitpunkt = jetzt;
+
+  if (wasdGedrueckt.size === 0) return;
+
+  const azimut = controls.getAzimuthalAngle();
+  const vorwaerts = new THREE.Vector3(-Math.sin(azimut), 0, -Math.cos(azimut));
+  const rechts = new THREE.Vector3(-vorwaerts.z, 0, vorwaerts.x);
+
+  const bewegung = new THREE.Vector3();
+  if (wasdGedrueckt.has("w")) bewegung.add(vorwaerts);
+  if (wasdGedrueckt.has("s")) bewegung.sub(vorwaerts);
+  if (wasdGedrueckt.has("d")) bewegung.add(rechts);
+  if (wasdGedrueckt.has("a")) bewegung.sub(rechts);
+  if (bewegung.lengthSq() === 0) return;
+
+  const distanz = sichtbareHoeheMeterAktuell() * WASD_GESCHWINDIGKEIT_FAKTOR * deltaSekunden;
+  bewegung.normalize().multiplyScalar(distanz);
+
+  camera.position.add(bewegung);
+  controls.target.add(bewegung);
 }
 
 renderer.setAnimationLoop(() => {
+  wasdBewegungAnwenden();
   controls.update();
-  gebaeudeOverlaysAktualisieren();
+  detailSichtbarkeitAktualisieren();
+  kameraSchwenkAktualisieren();
+  wohnungsKreiseSkalierenAnKamera();
   renderer.render(scene, camera);
 });
+
+
+
+
+
+
+
+
+
+const WOHNUNGSKREIS_REFERENZ_METER = 300;
+const ZIMMER_KONTUR_EINFUEGEPUNKT_OFFSET = THREE.MathUtils.degToRad(120);
+
+function wohnungsKreiseSkalierenAnKamera() {
+  const sichtbareHoeheMeter = sichtbareHoeheMeterAktuell();
+  const faktor = Math.max(1, sichtbareHoeheMeter / WOHNUNGSKREIS_REFERENZ_METER);
+  for (const kreis of alleWohnungsKreise) {
+    if (kreis.visible) kreis.scale.setScalar(faktor);
+  }
+
+  const azimut = controls.getAzimuthalAngle() + ZIMMER_KONTUR_EINFUEGEPUNKT_OFFSET;
+  for (const kontur of alleZimmerKonturen) {
+    if (kontur.visible) kontur.rotation.y = azimut;
+  }
+}
+
+
+
+
+
+
+
+
+// Ziel: Gebäude-/Wohnungs-/Zimmer-Slot der Filterleiste zeigen ihre mehreren Kennzahlen als Tabs
+
+const filterLeisteElement = document.getElementById("filter-leiste");
+
+for (const label of document.querySelectorAll(".filter-slot-label")) {
+  label.addEventListener("click", () => {
+    const slot = label.closest(".filter-slot");
+    const eingeklappt = slot.classList.toggle("eingeklappt");
+    label.setAttribute("aria-expanded", String(!eingeklappt));
+  });
+}
+
+new ResizeObserver(() => {
+  obererRandPx = filterLeisteElement.getBoundingClientRect().height;
+  document.documentElement.style.setProperty("--oberer-rand", `${obererRandPx}px`);
+  layoutAktualisieren();
+}).observe(filterLeisteElement);
+
+const FILTER_GRUPPEN = {
+  gebaeude: ["gf", "hnfAnteil", "wohnungen", "anzahlWohnungenProGeschoss", "gebaeudetiefe", "geschossigkeit"],
+  wohnungen: ["wohnungsgroesse", "zimmer", "anzahlBadezimmer"],
+  zimmer: ["wohnenSchlafenGroesse", "kuechengroesse", "esszimmergroesse", "nasszellengroesse", "reduitgroesse", "balkongroesse"],
+};
+
+function filterTabsInitialisieren() {
+  for (const [gruppenName, dims] of Object.entries(FILTER_GRUPPEN)) {
+    const slot = document.querySelector(`.filter-slot[data-slot="${gruppenName}"]`);
+    const nav = slot.querySelector(".filter-tabs");
+    const body = slot.querySelector(".filter-slot-body");
+
+    dims.forEach((dim, i) => {
+      const card = body.querySelector(`.chart-card[data-dim="${dim}"]`);
+      const label = card.querySelector("h3").textContent;
+
+      const tab = document.createElement("button");
+      tab.type = "button";
+      tab.className = "filter-tab";
+      tab.dataset.dim = dim;
+      tab.append(label);
+
+      tab.addEventListener("click", () => {
+        for (const anderesTab of nav.querySelectorAll(".filter-tab")) anderesTab.classList.remove("aktiv");
+        for (const andereCard of body.querySelectorAll(".chart-card")) andereCard.classList.remove("aktiv");
+        tab.classList.add("aktiv");
+        card.classList.add("aktiv");
+      });
+
+      if (i === 0) {
+        tab.classList.add("aktiv");
+        card.classList.add("aktiv");
+      }
+      nav.appendChild(tab);
+    });
+  }
+}
+filterTabsInitialisieren();
+
+
+
+
+
+
+
+
+
 
 // --------------------------------------------------------------------------------
 
@@ -161,18 +385,55 @@ renderer.setAnimationLoop(() => {
 
 // --------------------------------------------------------------------------------
 
-const csvPfad = "../data-prep/geometries_erste20.csv";
 
-Papa.parse(csvPfad, {
-  download: true,
-  header: true,
-  dynamicTyping: true,
-  skipEmptyLines: true,
-  complete: (ergebnis) => {
-    const gebaeudeDaten = ergebnis.data;
-    gebaeudeDarstellen(gebaeudeDaten);
-  },
-});
+
+
+// const csvPfad = "../data-prep/65_geometries_erste100.csv"; // für zum Testen
+const csvPfad = "../data-prep/10_geometries_final.csv";
+
+
+
+
+const NUMERISCHE_SPALTEN = new Set(["flaeche", "zimmer_zaehler", "hoehenkote"]);
+
+const splashFortschrittElement = document.getElementById("splash-fortschritt");
+
+fetch(csvPfad)
+  .then((antwort) => antwort.blob())
+  .then((blob) => {
+    const gebaeudeDaten = [];
+    const gesehenGebaeudeIds = new Set(); // wächst live mit, für die Gebäude-Anzahl in der Ladeanzeige
+    Papa.parse(blob, {
+      header: true,
+      skipEmptyLines: true,
+      chunkSize: 5 * 1024 * 1024,
+      transform: (wert, spalte) => (NUMERISCHE_SPALTEN.has(spalte) ? (wert === "" ? 0 : Number(wert)) : wert),
+      chunk: (ergebnis) => {
+        for (const zeile of ergebnis.data) {
+          gebaeudeDaten.push(zeile);
+          gesehenGebaeudeIds.add(zeile.gebaeude_id);
+        }
+        const prozent = Math.round((ergebnis.meta.cursor / blob.size) * 100);
+        splashFortschrittElement.textContent = Number.isFinite(prozent)
+          ? `${prozent}% geladen (${gesehenGebaeudeIds.size.toLocaleString("de-CH")} Gebäude)`
+          : `${gesehenGebaeudeIds.size.toLocaleString("de-CH")} Gebäude geladen…`;
+      },
+      complete: () => {
+        splashFortschrittElement.textContent = "Grundrisse werden geladen...";
+        setTimeout(() => gebaeudeDarstellen(gebaeudeDaten), 0);
+      },
+    });
+  });
+
+
+
+
+
+
+
+
+
+
 
 // --------------------------------------------------------------------------------
 
@@ -193,12 +454,297 @@ function wktZuKonturen(wkt) {
   );
 }
 
-function segmenteHinzufuegen(zielArray, kontur) {
+function segmenteHinzufuegen(zielArray, kontur, hoehenkote = 0) {
   for (let i = 0; i < kontur.length - 1; i++) {
     const [x0, y0] = kontur[i];
     const [x1, y1] = kontur[i + 1];
-    zielArray.push(x0, 0, y0, x1, 0, y1); // die beiden 0 sind die Höhe
+    zielArray.push(x0, hoehenkote, y0, x1, hoehenkote, y1);
   }
+}
+
+const schwarzplanMaterial = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.DoubleSide });
+const gestapelteFuellungMaterial = new THREE.MeshBasicMaterial({ color: cssFarbeAufloesen("var(--layout-hintergrund)"), side: THREE.DoubleSide }); // Farbe: GF Mesh bei Isometrie
+
+function fuellungMaterialSetzen(fuellung, material) {
+  if (!fuellung) return;
+  if (fuellung.isMesh) {
+    fuellung.material = material;
+  } else {
+    for (const mesh of fuellung.children) mesh.material = material;
+  }
+}
+
+function punktInKontur([px, py], kontur) {
+  let innen = false;
+  for (let i = 0, j = kontur.length - 1; i < kontur.length; j = i++) {
+    const [xi, yi] = kontur[i];
+    const [xj, yj] = kontur[j];
+    const schneidet = yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi;
+    if (schneidet) innen = !innen;
+  }
+  return innen;
+}
+
+// Ziel: Aus den Geschossfläche-Zeilen eines Geschosses eine gefüllte schwarze Fläche
+
+function schwarzplanFuellungErstellen(rohZeilen) {
+  const meshes = [];
+
+  for (const zeile of rohZeilen) {
+    if (zeile.konturen.length === 0) continue;
+
+    const nachFlaecheAbsteigend = zeile.konturen
+      .slice()
+      .sort((a, b) => Math.abs(flaecheAusKontur(b)) - Math.abs(flaecheAusKontur(a)));
+
+    const aussenKonturen = [];
+    for (const kontur of nachFlaecheAbsteigend) {
+      const passendeAussenkontur = aussenKonturen.find((a) => punktInKontur(kontur[0], a.kontur));
+      if (passendeAussenkontur) {
+        passendeAussenkontur.shape.holes.push(new THREE.Path(kontur.map(([x, y]) => new THREE.Vector2(x, y))));
+      } else {
+        const shape = new THREE.Shape(kontur.map(([x, y]) => new THREE.Vector2(x, y)));
+        aussenKonturen.push({ shape, kontur });
+      }
+    }
+
+    for (const { shape } of aussenKonturen) {
+      const geometrie = new THREE.ShapeGeometry(shape);
+      const mesh = new THREE.Mesh(geometrie, schwarzplanMaterial);
+      mesh.rotation.x = Math.PI / 2;
+      mesh.position.y = zeile.hoehenkote - 0.05;
+      meshes.push(mesh);
+    }
+  }
+
+  if (meshes.length === 0) return null;
+  if (meshes.length === 1) return meshes[0];
+
+  const gruppe = new THREE.Group();
+  gruppe.add(...meshes);
+  return gruppe;
+}
+
+const raumKlickflaecheMaterial = new THREE.MeshBasicMaterial({
+  transparent: true,
+  opacity: 0,
+  depthWrite: false,
+  side: THREE.DoubleSide,
+});
+
+const raumHighlightMaterial = new THREE.MeshBasicMaterial({
+  color: "#ff0000",
+  transparent: true,
+  opacity: 0.45,
+  depthWrite: false,
+  side: THREE.DoubleSide,
+});
+
+function raumKlickflaechenErstellen(rohZeilen) {
+  const geometrien = [];
+  const raeume = [];
+
+  for (const zeile of rohZeilen) {
+    if (zeile.konturen.length === 0) continue;
+
+    const nachFlaecheAbsteigend = zeile.konturen
+      .slice()
+      .sort((a, b) => Math.abs(flaecheAusKontur(b)) - Math.abs(flaecheAusKontur(a)));
+
+    const aussenKonturen = [];
+    for (const kontur of nachFlaecheAbsteigend) {
+      const passendeAussenkontur = aussenKonturen.find((a) => punktInKontur(kontur[0], a.kontur));
+      if (passendeAussenkontur) {
+        passendeAussenkontur.shape.holes.push(new THREE.Path(kontur.map(([x, y]) => new THREE.Vector2(x, y))));
+      } else {
+        const shape = new THREE.Shape(kontur.map(([x, y]) => new THREE.Vector2(x, y)));
+        aussenKonturen.push({ shape, kontur });
+      }
+    }
+
+    for (const { shape } of aussenKonturen) {
+      const geometrie = new THREE.ShapeGeometry(shape);
+      geometrie.translate(0, 0, -(zeile.hoehenkote - 0.005)); // knapp unter den Linien, damit diese bei aktiviertem Highlight obenauf bleiben
+      geometrien.push(geometrie);
+      raeume.push(zeile);
+    }
+  }
+
+  if (geometrien.length === 0) return null;
+
+  const geometrie = mergeGeometries(geometrien, true);
+  for (const gruppe of geometrie.groups) gruppe.materialIndex = RAUM_MATERIAL_INDEX.standard;
+
+  const mesh = new THREE.Mesh(geometrie, RAUM_MATERIALIEN_ARRAY);
+  mesh.rotation.x = Math.PI / 2;
+  mesh.userData.raeume = raeume;
+  return mesh;
+}
+
+
+
+
+
+
+
+
+
+
+
+// Ziel: Pro Wohnung eine kreisförmige Flächenfüllung
+
+function cssFarbeAufloesen(varAusdruck) {
+  const name = varAusdruck.match(/--[\w-]+/)[0];
+  const wert = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return new THREE.Color(wert);
+}
+
+const ZIMMER_STRICH_WINKEL_SCHRITT = THREE.MathUtils.degToRad(20); // Winkelabstand zwischen zwei Strich-Mitten
+const ZIMMER_STRICH_WINKEL_BREITE = THREE.MathUtils.degToRad(12); // Länge eines vollen Strichs (in Grad Bogenmass)
+const ZIMMER_STRICH_HOEHE = 1.5; // Meter - wie hoch die Strich-"Balken" aus der Grundfläche ragen
+const ZIMMER_STRICH_DICKE = 1; // Meter - radiale Dicke der Striche. 
+
+function bogenWandErstellen(radius, winkelMitte, winkelBreite, segmente = 12) {
+  const start = winkelMitte - winkelBreite / 2;
+  const innenRadius = radius;
+  const aussenRadius = radius + ZIMMER_STRICH_DICKE;
+
+  const vertices = [];
+  for (let i = 0; i <= segmente; i++) {
+    const w = start + (i / segmente) * winkelBreite;
+    const cosW = Math.cos(w), sinW = Math.sin(w);
+    vertices.push(
+      innenRadius * cosW, 0, innenRadius * sinW,
+      aussenRadius * cosW, 0, aussenRadius * sinW,
+      innenRadius * cosW, ZIMMER_STRICH_HOEHE, innenRadius * sinW,
+      aussenRadius * cosW, ZIMMER_STRICH_HOEHE, aussenRadius * sinW
+    );
+  }
+
+  const indices = [];
+  for (let i = 0; i < segmente; i++) {
+    const iInnenU = i * 4, iAussenU = i * 4 + 1, iInnenO = i * 4 + 2, iAussenO = i * 4 + 3;
+    const jInnenU = iInnenU + 4, jAussenU = iAussenU + 4, jInnenO = iInnenO + 4, jAussenO = iAussenO + 4;
+
+    indices.push(iInnenO, iAussenO, jAussenO, iInnenO, jAussenO, jInnenO);
+    indices.push(iAussenU, iAussenO, jAussenO, iAussenU, jAussenO, jAussenU);
+    indices.push(iInnenU, jInnenU, jInnenO, iInnenU, jInnenO, iInnenO);
+  }
+
+  indices.push(0, 2, 3, 0, 3, 1);
+  const letzte = segmente * 4;
+  indices.push(letzte, letzte + 1, letzte + 3, letzte, letzte + 3, letzte + 2);
+
+  return { vertices, indices };
+}
+
+function wohnungsStrichKonturErstellen(radius, anzahl) {
+  const volleStriche = Math.floor(anzahl);
+  const halberStrich = anzahl - volleStriche >= 0.5;
+  if (volleStriche === 0 && !halberStrich) return null;
+
+  const alleVertices = [];
+  const alleIndices = [];
+  const bogenHinzufuegen = (winkelMitte, winkelBreite) => {
+    const { vertices, indices } = bogenWandErstellen(radius, winkelMitte, winkelBreite);
+    const basis = alleVertices.length / 3;
+    alleVertices.push(...vertices);
+    for (const index of indices) alleIndices.push(index + basis);
+  };
+
+  for (let i = 0; i < volleStriche; i++) {
+    bogenHinzufuegen(i * ZIMMER_STRICH_WINKEL_SCHRITT, ZIMMER_STRICH_WINKEL_BREITE);
+  }
+  if (halberStrich) {
+    bogenHinzufuegen(volleStriche * ZIMMER_STRICH_WINKEL_SCHRITT, ZIMMER_STRICH_WINKEL_BREITE / 2);
+  }
+
+  const geometrie = new THREE.BufferGeometry();
+  geometrie.setAttribute("position", new THREE.Float32BufferAttribute(alleVertices, 3));
+  geometrie.setIndex(alleIndices);
+
+  // Hier können die Kreissegmente der Zimmer pro WHG und Anzahl Badezimmer angepasst werden
+  const material = new THREE.MeshBasicMaterial({
+    color: "#ffffff",
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: 0.6,
+    depthWrite: false,
+  });
+  return new THREE.Mesh(geometrie, material);
+}
+
+function wohnungsKreiseErstellen(gebaeude) {
+  const bboxProWohnung = {};
+  for (const zeile of gebaeude.zeilen) {
+    if (zeile.entitaet_typ !== "Raum" || !zeile.wohnungs_id) continue;
+    if (!bboxProWohnung[zeile.wohnungs_id]) {
+      bboxProWohnung[zeile.wohnungs_id] = { minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity, hoehenkote: Infinity };
+    }
+    const bbox = bboxProWohnung[zeile.wohnungs_id];
+    for (const kontur of zeile.konturen) {
+      for (const [x, z] of kontur) {
+        if (x < bbox.minX) bbox.minX = x;
+        if (x > bbox.maxX) bbox.maxX = x;
+        if (z < bbox.minZ) bbox.minZ = z;
+        if (z > bbox.maxZ) bbox.maxZ = z;
+      }
+    }
+    if (zeile.hoehenkote < bbox.hoehenkote) bbox.hoehenkote = zeile.hoehenkote;
+  }
+
+  function konturRegistrieren(kontur, mitteX, mitteZ, hoehenkote) {
+    if (!kontur) return null;
+    kontur.position.set(mitteX, hoehenkote, mitteZ);
+    kontur.visible = false;
+    scene.add(kontur);
+    gebaeude.linienObjekte.push(kontur);
+    alleWohnungsKreise.push(kontur); // für die Zoom-Skalierung
+    alleZimmerKonturen.push(kontur); // für die Billboard-Rotation zur Kamera
+    return kontur;
+  }
+
+  const kreise = {};
+  const zimmerKonturen = {};
+  const badezimmerKonturen = {};
+  for (const [wohnungId, bbox] of Object.entries(bboxProWohnung)) {
+    const flaeche = gebaeude.wohnungsFlaeche[wohnungId] || 0;
+    if (flaeche <= 0) continue;
+
+    const radius = Math.sqrt((flaeche * 4) / Math.PI); // Kreisgrösse für Filter Wohnungen ändern
+    const mitteX = (bbox.minX + bbox.maxX) / 2;
+    const mitteZ = (bbox.minZ + bbox.maxZ) / 2;
+
+    const geometrie = new THREE.CircleGeometry(radius, 96);
+    const material = new THREE.MeshBasicMaterial({
+      color: "#ffffff",
+      transparent: true,
+      opacity: 0.3,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const kreis = new THREE.Mesh(geometrie, material);
+    kreis.rotation.x = Math.PI / 2;
+    kreis.position.set(mitteX, bbox.hoehenkote, mitteZ);
+    kreis.visible = false; // erst sichtbar, wenn wohnungsMarkierungAktualisieren eine passende Wohnung findet
+
+    scene.add(kreis);
+    gebaeude.linienObjekte.push(kreis); // damit gebaeudePositionSetzen ihn beim Neu-Packen mitverschiebt
+    alleWohnungsKreise.push(kreis); // für die Zoom-Skalierung, siehe wohnungsKreiseSkalierenAnKamera
+    kreise[wohnungId] = kreis;
+
+    // Zimmer-Strich-Kontur auf dem Rand DIESES Kreises
+    const zimmerKontur = wohnungsStrichKonturErstellen(radius, gebaeude.zimmerProWohnung[wohnungId] || 0);
+    if (konturRegistrieren(zimmerKontur, mitteX, mitteZ, bbox.hoehenkote)) {
+      zimmerKonturen[wohnungId] = zimmerKontur;
+    }
+
+    const badezimmerKontur = wohnungsStrichKonturErstellen(radius * 1.25, gebaeude.badAnzahl[wohnungId] || 0);
+    if (konturRegistrieren(badezimmerKontur, mitteX, mitteZ, bbox.hoehenkote)) {
+      badezimmerKonturen[wohnungId] = badezimmerKontur;
+    }
+  }
+  return { kreise, zimmerKonturen, badezimmerKonturen };
 }
 
 function gebaeudeDarstellen(zeilen) {
@@ -224,7 +770,8 @@ function gebaeudeDarstellen(zeilen) {
           maxY = Math.max(maxY, y);
         }
       }
-      return { ...zeile, konturen };
+      const { koordinaten, ...rest } = zeile;
+      return { ...rest, konturen };
     });
 
     const breite = maxX - minX;
@@ -237,23 +784,23 @@ function gebaeudeDarstellen(zeilen) {
     const zimmerProWohnung = {};
     const geschossIds = new Set();
     let gf = 0;
+    let maxHoehenkote = 0; // höchster hoehenkote-Wert im Gebäude
 
-    // Pro-Wohnung-Kennzahlen (unabhängig von der SIA416-Kategorie): Gesamtfläche der Wohnung sowie
-    // die Fläche ihrer Zimmer-/Küchen-/Balkon-artigen Räume und die Anzahl Badezimmer.
     const wohnungsFlaeche = {};
-    const zimmerFlaechen = {}; // wohnungId -> [Fläche, Fläche, ...] (jedes Zimmer einzeln, nicht summiert)
+    const wohnenSchlafenFlaechen = {};
+    const esszimmerFlaechen = {};
     const kuecheFlaeche = {};
     const balkonFlaeche = {};
+    const reduitFlaeche = {};
+    const nasszelleFlaeche = {};
     const badAnzahl = {};
 
-    // Für "Anzahl Wohnungen pro Geschoss": pro Geschoss die Menge der dort liegenden Wohnungen,
-    // sowie pro Wohnung ihr unterstes Geschoss (Heimgeschoss), für den seltenen Fall von Wohnungen
-    // über mehrere Geschosse (Maisonette).
     const wohnungenJeGeschoss = new Map();
     const heimGeschossProWohnung = new Map();
 
     for (const zeile of zeilenMitPunkten) {
       geschossIds.add(zeile.geschoss_id);
+      if (zeile.hoehenkote > maxHoehenkote) maxHoehenkote = zeile.hoehenkote;
 
       if (zeile.entitaet_typ === "Raum" && zeile.definition) {
         flaechePro416Kategorie[zeile.definition] =
@@ -265,12 +812,18 @@ function gebaeudeDarstellen(zeilen) {
 
         zimmerProWohnung[wohnungId] = (zimmerProWohnung[wohnungId] || 0) + (zeile.zimmer_zaehler || 0);
         wohnungsFlaeche[wohnungId] = (wohnungsFlaeche[wohnungId] || 0) + flaeche;
-        if (ZIMMER_SUBTYPEN.has(zeile.entitaet_subtyp)) {
-          if (!zimmerFlaechen[wohnungId]) zimmerFlaechen[wohnungId] = [];
-          zimmerFlaechen[wohnungId].push(flaeche);
+        if (WOHNEN_SCHLAFEN_SUBTYPEN.has(zeile.entitaet_subtyp)) {
+          if (!wohnenSchlafenFlaechen[wohnungId]) wohnenSchlafenFlaechen[wohnungId] = [];
+          wohnenSchlafenFlaechen[wohnungId].push(flaeche);
+        }
+        if (ESSEN_SUBTYPEN.has(zeile.entitaet_subtyp)) {
+          if (!esszimmerFlaechen[wohnungId]) esszimmerFlaechen[wohnungId] = [];
+          esszimmerFlaechen[wohnungId].push(flaeche);
         }
         if (KUECHE_SUBTYPEN.has(zeile.entitaet_subtyp)) kuecheFlaeche[wohnungId] = (kuecheFlaeche[wohnungId] || 0) + flaeche;
         if (BALKON_SUBTYPEN.has(zeile.entitaet_subtyp)) balkonFlaeche[wohnungId] = (balkonFlaeche[wohnungId] || 0) + flaeche;
+        if (REDUIT_SUBTYPEN.has(zeile.entitaet_subtyp)) reduitFlaeche[wohnungId] = (reduitFlaeche[wohnungId] || 0) + flaeche;
+        if (NASSZELLE_SUBTYPEN.has(zeile.entitaet_subtyp)) nasszelleFlaeche[wohnungId] = (nasszelleFlaeche[wohnungId] || 0) + flaeche;
         if (zeile.entitaet_subtyp === "Badezimmer") badAnzahl[wohnungId] = (badAnzahl[wohnungId] || 0) + 1;
 
         if (!wohnungenJeGeschoss.has(zeile.geschoss_label)) wohnungenJeGeschoss.set(zeile.geschoss_label, new Set());
@@ -282,7 +835,6 @@ function gebaeudeDarstellen(zeilen) {
         }
       }
       if (zeile.entitaet_typ === "Geschossfläche") {
-        // "flaeche" ist bei Geschossfläche-Zeilen leer -> Fläche selbst aus der Kontur berechnen
         gf += flaecheAusKonturen(zeile.konturen);
       }
     }
@@ -291,6 +843,7 @@ function gebaeudeDarstellen(zeilen) {
     for (const [wohnungId, geschoss] of heimGeschossProWohnung) {
       wohnungenProGeschoss[wohnungId] = wohnungenJeGeschoss.get(geschoss).size;
     }
+    const heimGeschoss = Object.fromEntries(heimGeschossProWohnung);
 
     gebaeudeListe.push({
       gebaeude_id,
@@ -304,22 +857,28 @@ function gebaeudeDarstellen(zeilen) {
       zimmerProWohnung,
       geschossigkeit: geschossIds.size,
       gf,
+      maxHoehenkote,
+      hnfAnteil: gf > 0 ? ((flaechePro416Kategorie["HNF"] || 0) / gf) * 100 : 0, // in Prozent, nicht als Bruch (0-1)
       wohnungenAnzahl: Object.keys(zimmerProWohnung).length,
       wohnungsFlaeche,
-      zimmerFlaechen,
+      wohnenSchlafenFlaechen,
+      esszimmerFlaechen,
       kuecheFlaeche,
       balkonFlaeche,
+      reduitFlaeche,
+      nasszelleFlaeche,
       badAnzahl,
       wohnungenProGeschoss,
+      heimGeschoss,
     });
   }
 
   WOHNUNGEN = wohnungenAufbauen(gebaeudeListe);
+  wohnungenNachId = new Map(WOHNUNGEN.map((wohnung) => [wohnung.wohnungId, wohnung]));
 
   gebaeudePacken(gebaeudeListe);
 
   for (const gebaeude of gebaeudeListe) {
-    // Für gebaeudePositionenAktualisieren: Rückkehr zur ursprünglichen (vollen) Anordnung, sobald kein Filter mehr aktiv ist.
     gebaeude.urspruenglicheMitteX = gebaeude.mitteX;
     gebaeude.urspruenglicheMitteZ = gebaeude.mitteZ;
   }
@@ -327,19 +886,26 @@ function gebaeudeDarstellen(zeilen) {
   gebaeudeNachId = new Map(gebaeudeListe.map((gebaeude) => [gebaeude.gebaeude_id, gebaeude]));
 
   for (const gebaeude of gebaeudeListe) {
-    const typGruppen = {}; // entitaet_typ -> { positionen, zeilen } (nur für dieses Gebäude)
+    const geschossGruppen = {};
 
     for (const zeile of gebaeude.zeilen) {
       if (!stiftfarbeUmfassungslinie[zeile.entitaet_typ]) continue;
 
-      if (!typGruppen[zeile.entitaet_typ]) {
-        typGruppen[zeile.entitaet_typ] = { positionen: [], zeilen: [] };
+      const schluessel = `${zeile.entitaet_typ}|${zeile.geschoss_label}`;
+      if (!geschossGruppen[schluessel]) {
+        geschossGruppen[schluessel] = {
+          positionen: [],
+          zeilen: [],
+          rohZeilen: [],
+          entitaetTyp: zeile.entitaet_typ,
+          geschossLabel: zeile.geschoss_label,
+        };
       }
-      const gruppe = typGruppen[zeile.entitaet_typ];
+      const gruppe = geschossGruppen[schluessel];
+      gruppe.rohZeilen.push(zeile);
 
       for (const kontur of zeile.konturen) {
-        segmenteHinzufuegen(gruppe.positionen, kontur);
-        // Pro hinzugefügtem Segment dieselbe Zeile vermerken (kontur.length - 1 Segmente pro Kontur)
+        segmenteHinzufuegen(gruppe.positionen, kontur, zeile.hoehenkote);
         for (let i = 0; i < kontur.length - 1; i++) {
           gruppe.zeilen.push(zeile);
         }
@@ -347,31 +913,160 @@ function gebaeudeDarstellen(zeilen) {
     }
 
     gebaeude.linienMaterialien = [];
-    gebaeude.linienObjekte = []; // für gebaeudePositionSetzen (Neu-Packen beim Filtern)
+    gebaeude.linienObjekte = [];
 
-    for (const [entitaetTyp, gruppe] of Object.entries(typGruppen)) {
-      const material = stiftfarbeUmfassungslinie[entitaetTyp].clone();
+    for (const gruppe of Object.values(geschossGruppen)) {
+      const material = stiftfarbeUmfassungslinie[gruppe.entitaetTyp].clone();
       material.transparent = true; // ermöglicht opacity 0 zum Ausblenden, siehe gebaeudeDimmingAktualisieren
       renderer.getSize(material.resolution);
       gebaeudeLinienMaterialien.push(material);
-      gebaeude.linienMaterialien.push(material);
 
       const geometrie = new LineSegmentsGeometry();
       geometrie.setPositions(gruppe.positionen);
 
       const linien = new LineSegments2(geometrie, material);
       linien.computeLineDistances();
-      linien.userData.zeilen = gruppe.zeilen; // für die Infobox: Zeile pro Segment-Index
+      linien.userData.zeilen = gruppe.zeilen;
+      linien.visible = gruppe.entitaetTyp === "Geschossfläche" && gruppe.geschossLabel === STARTGESCHOSS_LABEL;
       scene.add(linien);
       klickbareObjekte.push(linien);
       gebaeude.linienObjekte.push(linien);
+
+      // Schwarzplan-Füllung nur für Geschossfläche - Mesh statt Linien, siehe schwarzplanFuellungErstellen.
+      let fuellung = null;
+      if (gruppe.entitaetTyp === "Geschossfläche") {
+        fuellung = schwarzplanFuellungErstellen(gruppe.rohZeilen);
+        if (fuellung) {
+          fuellung.visible = linien.visible;
+          scene.add(fuellung);
+          gebaeude.linienObjekte.push(fuellung);
+        }
+      }
+
+      const klickflaeche = gruppe.entitaetTyp === "Raum" ? raumKlickflaechenErstellen(gruppe.rohZeilen) : null;
+      if (klickflaeche) {
+        klickflaeche.visible = linien.visible;
+        scene.add(klickflaeche);
+        klickbareObjekte.push(klickflaeche);
+        alleRaumKlickflaechen.push(klickflaeche);
+        gebaeude.linienObjekte.push(klickflaeche);
+      }
+
+      gebaeude.linienMaterialien.push({
+        material,
+        linien,
+        fuellung,
+        klickflaeche,
+        geschossLabel: gruppe.geschossLabel,
+        entitaetTyp: gruppe.entitaetTyp,
+        gefiltertSichtbar: true,
+        enthuellt: !(gruppe.entitaetTyp === "Geschossfläche" && gruppe.geschossLabel === STARTGESCHOSS_LABEL),
+      });
     }
+
+    const { kreise, zimmerKonturen, badezimmerKonturen } = wohnungsKreiseErstellen(gebaeude);
+    gebaeude.wohnungsKreise = kreise;
+    gebaeude.wohnungsZimmerKontur = zimmerKonturen;
+    gebaeude.wohnungsBadezimmerKontur = badezimmerKonturen;
   }
 
-  annotationenErstellen(gebaeudeListe);
   kameraAufGebaeudeZentrieren(gebaeudeListe);
+  detailSichtbarkeitAktualisieren(true);
   filterPanelErstellen();
+
+  splashAusblenden();
+  enthuellungStarten(gebaeudeListe);
 }
+
+
+
+
+
+
+
+
+
+
+
+// --------------------------------------------------------------------------------
+
+// Ziel: Akt 2 - Gebäude erscheinen beim ersten Laden zufällig gestaffelt
+
+// --------------------------------------------------------------------------------
+
+const ENTHUELLUNG_DAUER_MS = 4000; // Gesamtfenster, in dem alle Gebäude zufällig auftauchen (~3-5s)
+
+const splashElement = document.getElementById("splash");
+const kopfTitelElement = document.getElementById("kopf-titel");
+
+function splashAusblenden() {
+  splashElement.classList.add("ausgeblendet");
+}
+
+function filterLeisteEinblenden() {
+  filterLeisteElement.classList.add("sichtbar");
+  kopfTitelElement.classList.add("sichtbar");
+}
+
+splashElement.addEventListener("transitionend", () => {
+  splashElement.style.display = "none";
+});
+
+function enthuellungStarten(gebaeudeListe) {
+  const jetzt = performance.now();
+  const wartendeGruppen = [];
+  for (const gebaeude of gebaeudeListe) {
+    for (const gruppe of gebaeude.linienMaterialien) {
+      if (gruppe.enthuellt) continue;
+      wartendeGruppen.push({ gruppe, zeitpunkt: jetzt + Math.random() * ENTHUELLUNG_DAUER_MS });
+    }
+  }
+  if (wartendeGruppen.length === 0) {
+    filterLeisteEinblenden();
+    return;
+  }
+
+  function schritt() {
+    const aktuelleZeit = performance.now();
+    let alleFertig = true;
+    for (const eintrag of wartendeGruppen) {
+      if (eintrag.gruppe.enthuellt) continue;
+      if (aktuelleZeit >= eintrag.zeitpunkt) {
+        eintrag.gruppe.enthuellt = true;
+        linienSichtbarkeitAnwenden(eintrag.gruppe);
+      } else {
+        alleFertig = false;
+      }
+    }
+    if (!alleFertig) requestAnimationFrame(schritt);
+    else filterLeisteEinblenden();
+  }
+  requestAnimationFrame(schritt);
+
+  const ueberspringen = () => {
+    for (const eintrag of wartendeGruppen) {
+      if (!eintrag.gruppe.enthuellt) {
+        eintrag.gruppe.enthuellt = true;
+        linienSichtbarkeitAnwenden(eintrag.gruppe);
+      }
+    }
+    filterLeisteEinblenden();
+    window.removeEventListener("pointerdown", ueberspringen);
+    window.removeEventListener("wheel", ueberspringen);
+  };
+  window.addEventListener("pointerdown", ueberspringen);
+  window.addEventListener("wheel", ueberspringen);
+}
+
+
+
+
+
+
+
+
+
+
 
 // --------------------------------------------------------------------------------
 
@@ -382,19 +1077,14 @@ function gebaeudeDarstellen(zeilen) {
 const gebaeudeAbstand = 1; // Meter Mindestabstand zwischen zwei gepackten Gebäuden
 const maxPackVersucheProGebaeude = 300;
 
-// Reine Berechnung (keine Mutation) -> auch für das Neu-Packen einer gefilterten Teilmenge
-// wiederverwendbar (siehe gebaeudePositionenAktualisieren), nicht nur beim initialen Laden.
 function packPositionenBerechnen(gebaeudeUnterliste) {
   const gesamtFlaeche = gebaeudeUnterliste.reduce(
     (summe, g) => summe + (g.breite + gebaeudeAbstand) * (g.tiefe + gebaeudeAbstand),
     0
   );
-  // Packfläche grosszügiger als die reine Summe wählen, sonst braucht der Zufalls-Algorithmus
-  // zu viele Versuche bzw. findet für die letzten Gebäude keinen Platz mehr.
-  // Das Seitenverhältnis der Packfläche folgt dem Fenster, damit die Anordnung wie im
-  // sketch.js-Original der Canvas-/Fenstergrösse entspricht statt quadratisch zu sein.
-  const fensterAspect = window.innerWidth / window.innerHeight;
-  const packHoehe = Math.sqrt(gesamtFlaeche / (0.4 * fensterAspect)); // 0.4 bedeutet 40% der Bildschirmfläche wird mit Gebäude dargestellt ?? evt. später mit einem Regler steuern
+
+  const fensterAspect = canvasBreite() / canvasHoehe();
+  const packHoehe = Math.sqrt(gesamtFlaeche / (0.3 * fensterAspect)); // 0.3 bedeutet 30% der Bildschirmfläche wird mit Gebäude dargestellt ?? evt. später mit einem Regler steuern
   const packBreite = packHoehe * fensterAspect;
 
   const platzierteBoxen = []; // { x, y, w, h } in Packflächen-Koordinaten (x/y = obere linke Ecke)
@@ -459,9 +1149,6 @@ function gebaeudeVerschieben(gebaeude, dx, dz) {
   }
 }
 
-// Wie gebaeudeVerschieben, aber für ein bereits dargestelltes Gebäude: verschiebt die fertigen
-// Three.js-Objekte (Linien, Overlay-Position) statt der rohen Vertex-Daten, da Linien-Geometrien zu
-// diesem Zeitpunkt schon aus den Zeilen gebaut sind (siehe gebaeudePositionenAktualisieren).
 function gebaeudePositionSetzen(gebaeude, neueMitteX, neueMitteZ) {
   const dx = neueMitteX - gebaeude.mitteX;
   const dz = neueMitteZ - gebaeude.mitteZ;
@@ -474,33 +1161,21 @@ function gebaeudePositionSetzen(gebaeude, neueMitteX, neueMitteZ) {
     linien.position.x += dx;
     linien.position.z += dz;
   }
-
-  gebaeude.overlayPosition.x += dx;
-  gebaeude.overlayPosition.z += dz;
 }
 
-// --------------------------------------------------------------------------------
 
-// Ziel: SIA416-Donut und Zimmer-Legende sind pro Gebäude erstellt
 
-// --------------------------------------------------------------------------------
 
-function annotationenErstellen(gebaeudeListe) {
-  for (const gebaeude of gebaeudeListe) {
-    const overlay = gebaeudeOverlayErstellen(
-      gebaeude.mitteX,
-      gebaeude.mitteZ,
-      gebaeude.flaechePro416Kategorie,
-      gebaeude.zimmerProWohnung
-    );
-    gebaeude.overlayElement = overlay.element;
-    gebaeude.overlayPosition = overlay.position; // für gebaeudePositionSetzen (Neu-Packen beim Filtern)
-  }
-}
+
+
+
+
+
+
 
 // --------------------------------------------------------------------------------
 
-// Ziel: Kamera ist auf die Gesamtausdehnung aller Gebäude (inkl. Donut-Ring) zentriert
+// Ziel: Kamera ist auf die Gesamtausdehnung aller Gebäude zentriert
 
 // ???: Es ist zu überprüfen ob diese Funktion noch gebraucht wird wenn wir die neue Rechteckfunktion ausführen oder ob es nicht mehr Sinn macht dies zuerst zu setzen und dann die Szene aufbauen.
 
@@ -508,110 +1183,49 @@ function annotationenErstellen(gebaeudeListe) {
 
 function kameraAufGebaeudeZentrieren(gebaeudeListe) {
   let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  let maxHoehe = 0;
   for (const gebaeude of gebaeudeListe) {
     minX = Math.min(minX, gebaeude.mitteX - gebaeude.ringAussenRadius);
     maxX = Math.max(maxX, gebaeude.mitteX + gebaeude.ringAussenRadius);
     minZ = Math.min(minZ, gebaeude.mitteZ - gebaeude.ringAussenRadius);
     maxZ = Math.max(maxZ, gebaeude.mitteZ + gebaeude.ringAussenRadius);
+    maxHoehe = Math.max(maxHoehe, gebaeude.maxHoehenkote + 10); // 10m Puffer nach oben, damit die Kamera nicht zu nah an der Decke ist
   }
 
   const zentrumX = (minX + maxX) / 2;
   const zentrumZ = (minZ + maxZ) / 2;
 
-  const aktuellesAspect = window.innerWidth / window.innerHeight;
-  const randFaktor = 1.1; // 10% Rand
-  frustumSize = Math.max(
-    (maxZ - minZ) * randFaktor,
-    ((maxX - minX) * randFaktor) / aktuellesAspect
-  );
-  camera.zoom = 1; // sauberer "zoom to fit" statt mit dem zuletzt vom Nutzer gewählten Zoom zu skalieren
+  const aktuellesAspect = canvasBreite() / canvasHoehe();
+
+  const horizontalRadius = Math.sqrt(((maxX - minX) / 2) ** 2 + ((maxZ - minZ) / 2) ** 2);
+  const diagonalRadius = Math.sqrt(horizontalRadius ** 2 + maxHoehe ** 2);
+
+frustumSize = Math.max(diagonalRadius * 2, (maxX - minX) / aktuellesAspect) * 0.38;
   kameraFrustumAktualisieren(aktuellesAspect);
-  camera.position.set(zentrumX, 100, zentrumZ);
+
+  if (camera === kameraOrtho) {
+    kameraOrtho.zoom = 1;
+    camera.position.set(zentrumX, 100, zentrumZ);
+  } else {
+    const richtung = camera.position.clone().sub(controls.target).normalize();
+    const distanz = kameraDistanzFuerSichtbareHoehe(frustumSize);
+    camera.position.set(zentrumX, 0, zentrumZ).addScaledVector(richtung, distanz);
+  }
   camera.lookAt(zentrumX, 0, zentrumZ);
 
   controls.target.set(zentrumX, 0, zentrumZ);
   controls.update();
 }
 
-// --------------------------------------------------------------------------------
 
-// Ziel: SIA416 Flächen sind als Donut um jedes Gebäude dargestellt
 
-// --------------------------------------------------------------------------------
 
-function donutErstellen(flaechePro416Kategorie) {
-  const Bruttogeschossflaeche = Object.values(flaechePro416Kategorie).reduce((summe, f) => summe + f, 0);
-  if (Bruttogeschossflaeche === 0) return null; // keine kategorisierten Räume -> kein Donut
 
-  let winkel = 0; // Startwinkel des nächsten Segments in Grad, läuft von 0 bis 360 (CSS conic-gradient)
-  const segmente = [];
-  for (const [sia416_definition, flaeche] of Object.entries(flaechePro416Kategorie)) {
-    const prozentAnteil = flaeche / Bruttogeschossflaeche;
-    const segmentWinkel = prozentAnteil * 360;
 
-    const donutFill = flaechenfarbenSia416farben[sia416_definition] || "#999999"; // Fallback, falls Kategorie keine Farbe hat
-    segmente.push(`${donutFill} ${winkel}deg ${winkel + segmentWinkel}deg`);
 
-    winkel += segmentWinkel;
-  }
 
-  const donut = document.createElement("div");
-  donut.className = "donut-overlay";
-  donut.style.width = `${donutDurchmesserPx}px`;
-  donut.style.height = `${donutDurchmesserPx}px`;
-  donut.style.background = `conic-gradient(${segmente.join(", ")})`;
-  donut.appendChild(document.createElement("div")).className = "donut-loch";
-  return donut;
-}
 
-// --------------------------------------------------------------------------------
 
-// Ziel: Zimmerzahl sind dargestellt
-
-// --------------------------------------------------------------------------------
-
-function kreisElementErstellen(halb = false) {
-  const kreis = document.createElement("span");
-  kreis.className = halb ? "zimmer-kreis zimmer-kreis-halb" : "zimmer-kreis";
-  return kreis;
-}
-
-function zimmerLegendeErstellen(zimmerProWohnung) {
-  const wohnungenProZimmerzahl = {};
-  for (const zimmerzahl of Object.values(zimmerProWohnung)) {
-    wohnungenProZimmerzahl[zimmerzahl] = (wohnungenProZimmerzahl[zimmerzahl] || 0) + 1;
-  }
-
-  const zimmerzahlen = Object.keys(wohnungenProZimmerzahl).map(Number).sort((a, b) => a - b); // Aufsteigend sortiert
-  if (zimmerzahlen.length === 0) return null;
-
-  const legende = document.createElement("div");
-  legende.className = "zimmer-legende";
-
-  for (const zimmerzahl of zimmerzahlen) {
-    const volleKreise = Math.floor(zimmerzahl);
-    const halberKreis = zimmerzahl - volleKreise >= 0.5;
-    const anzahlWohnungen = wohnungenProZimmerzahl[zimmerzahl];
-
-    const reihe = document.createElement("div");
-    reihe.className = "zimmer-reihe";
-
-    const text = document.createElement("span");
-    text.textContent = `${anzahlWohnungen} Stk.`;
-    reihe.appendChild(text);
-
-    for (let i = 0; i < volleKreise; i++) {
-      reihe.appendChild(kreisElementErstellen());
-    }
-    if (halberKreis) {
-      reihe.appendChild(kreisElementErstellen(true));
-    }
-
-    legende.appendChild(reihe);
-  }
-
-  return legende;
-}
 
 // --------------------------------------------------------------------------------
 
@@ -620,48 +1234,189 @@ function zimmerLegendeErstellen(zimmerProWohnung) {
 // --------------------------------------------------------------------------------
 
 const klickbareObjekte = [];
+const alleRaumKlickflaechen = [];
 
 const raycaster = new THREE.Raycaster(); // greift die nächste Linie resp. Fläche die sich bei der Maus befindet
 raycaster.params.Line2 = { threshold: 8 }; // die Zahl ist die Tolleranz wie genau ich die Linie treffen muss
 
 const infobox = document.getElementById("infobox");
 
+function raumGruppenIndexVonFace(mesh, faceIndex) {
+  const gruppen = mesh.geometry.groups;
+  const zielIndex = faceIndex * 3;
+  for (let i = 0; i < gruppen.length; i++) {
+    const gruppe = gruppen[i];
+    if (zielIndex >= gruppe.start && zielIndex < gruppe.start + gruppe.count) return i;
+  }
+  return -1;
+}
+
+let ausgewaehlteRaumGruppen = [];
+
+let ausgewaehlteZeile = null;
+
+let isolierung = null;
+
+function raumAuswahlAufheben() {
+  for (const { mesh, gruppenIndex } of ausgewaehlteRaumGruppen) {
+    mesh.geometry.groups[gruppenIndex].materialIndex = RAUM_MATERIAL_INDEX.standard;
+  }
+  ausgewaehlteRaumGruppen = [];
+}
+
 renderer.domElement.addEventListener("click", (e) => {
+  const rect = renderer.domElement.getBoundingClientRect();
   const maus = new THREE.Vector2(
-    (e.clientX / window.innerWidth) * 2 - 1,
-    -(e.clientY / window.innerHeight) * 2 + 1
+    ((e.clientX - rect.left) / rect.width) * 2 - 1,
+    -((e.clientY - rect.top) / rect.height) * 2 + 1
   );
 
   raycaster.setFromCamera(maus, camera);
-  const treffer = raycaster.intersectObjects(klickbareObjekte);
+  const treffer = raycaster.intersectObjects(klickbareObjekte.filter((objekt) => objekt.visible));
 
   if (treffer.length === 0) {
     infobox.style.display = "none";
+    raumAuswahlAufheben();
+    ausgewaehlteZeile = null;
     return;
   }
 
   const naechsterTreffer = treffer[0];
-  const zeile = naechsterTreffer.object.userData.zeilen[naechsterTreffer.faceIndex];
+  const getroffenesObjekt = naechsterTreffer.object;
+  const istRaumMesh = !!getroffenesObjekt.userData.raeume;
+  const gruppenIndex = istRaumMesh ? raumGruppenIndexVonFace(getroffenesObjekt, naechsterTreffer.faceIndex) : -1;
+  const zeile = istRaumMesh
+    ? getroffenesObjekt.userData.raeume[gruppenIndex]
+    : getroffenesObjekt.userData.zeilen[naechsterTreffer.faceIndex];
+  ausgewaehlteZeile = zeile;
 
-  // hier kann ich das infofeld mit informationen gestalten
-  // <strong>  = bolt </strong>
+  const bereitsAusgewaehlt = ausgewaehlteRaumGruppen.some(
+    (a) => a.mesh === getroffenesObjekt && a.gruppenIndex === gruppenIndex
+  );
+  if (istRaumMesh && bereitsAusgewaehlt) {
+    raumAuswahlAufheben();
+  } else {
+    raumAuswahlAufheben();
+    if (istRaumMesh) {
+      const raeume = getroffenesObjekt.userData.raeume;
+      ausgewaehlteRaumGruppen = raeume
+        .map((r, i) => (r === zeile ? { mesh: getroffenesObjekt, gruppenIndex: i } : null))
+        .filter(Boolean);
+      for (const { mesh, gruppenIndex: i } of ausgewaehlteRaumGruppen) {
+        mesh.geometry.groups[i].materialIndex = RAUM_MATERIAL_INDEX.highlight;
+      }
+    }
+  }
 
   infobox.innerHTML = `
-    <strong>${zeile.entitaet_subtyp ?? "–"}</strong><br>
-    Geschoss: ${zeile.geschoss_label ?? "–"}<br>
-    Fläche: ${(zeile.entitaet_typ === "Raum" || zeile.entitaet_typ === "Geschossfläche") ? zeile.flaeche + " m2" : ""}<br>
+    <strong>${zeile.entitaet_subtyp ?? "–"}</strong>
+    <div class="infobox-tabelle">
+      <span>Gebäude-ID:</span><span>${zeile.gebaeude_id ?? "–"}</span>
+      <span>Geschoss:</span><span>${zeile.geschoss_label ?? "–"}</span>
+      <span>Fläche:</span><span>${(zeile.entitaet_typ === "Raum" || zeile.entitaet_typ === "Geschossfläche") ? zeile.flaeche + " m2" : ""}</span>
+    </div>
   `;
   infobox.style.left = `${e.clientX + 12}px`;
   infobox.style.top = `${e.clientY + 12}px`;
   infobox.style.display = "block";
 });
 
-// --------------------------------------------------------------------------------
+window.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  infobox.style.display = "none";
+  raumAuswahlAufheben();
+  ausgewaehlteZeile = null;
+});
 
-// Ziel: Fläche einer (evt. mehrteiligen) Kontur ist berechnet, z.B. für Geschossfläche-Zeilen,
-// deren "flaeche"-Spalte leer ist
+window.addEventListener("keydown", (e) => {
+  if (e.key.toLowerCase() !== "i") return;
 
-// --------------------------------------------------------------------------------
+  if (isolierung) {
+    isolierung = null;
+  } else if (ausgewaehlteZeile) {
+    isolierung = {
+      gebaeudeId: ausgewaehlteZeile.gebaeude_id,
+      geschossLabel: ausgewaehlteZeile.entitaet_typ === "Geschossfläche" ? null : ausgewaehlteZeile.geschoss_label,
+    };
+  } else {
+    return;
+  }
+
+  const { zaehlerProGebaeude } = matchAnzahlProGebaeudeBerechnen();
+  gebaeudeDimmingAktualisieren(zaehlerProGebaeude, filterAuswahl.geschoss);
+  wohnungsMarkierungAktualisieren();
+  raumSubtypMarkierungAktualisieren();
+});
+
+// Tastendruck F | Fixiert die Kamera um die richtigen Einstellungen für weitere Filter zu machen
+
+window.addEventListener("keydown", (e) => {
+  if (e.key.toLowerCase() !== "f") return;
+  positionierungFixiert = !positionierungFixiert;
+  console.log(positionierungFixiert ? "Positionierung fixiert (F zum Lösen)" : "Positionierung wieder aktiv (F zum Fixieren)");
+});
+
+// Tastendruck R | Neupositionierung der Grundrisse mit der neuen Auswahl von Filter
+window.addEventListener("keydown", (e) => {
+  if (e.key.toLowerCase() !== "r") return;
+  positionierungAusloesen();
+});
+
+// 2x Supersampling: verdoppelt Pixel-Dichte des Bildschirms für einen Export
+const PNG_EXPORT_SKALIERUNG = 2;
+
+// Tastendruck P | exportiert die aktuelle Ansicht als PNG
+window.addEventListener("keydown", (e) => {
+  if (e.key.toLowerCase() !== "p") return;
+
+  const breite = canvasBreite();
+  const hoehe = canvasHoehe();
+
+  // Auf Retina-Displays (devicePixelRatio 2) kann PNG_EXPORT_SKALIERUNG 4 eine Canvas-Auflösung
+  // anfordern, die grösser ist als die maximale Textur-/Viewport-Grösse der GPU - der Browser schneidet
+  // die Zeichnung dann kommentarlos am Rand ab, statt einen Fehler zu werfen. Deshalb hier auf das
+  // tatsächlich unterstützte Maximum begrenzen, statt den vollen Faktor blind anzuwenden.
+  const gl = renderer.getContext();
+  const maxAufloesung = Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE), ...gl.getParameter(gl.MAX_VIEWPORT_DIMS));
+  const skalierung = Math.min(
+    PNG_EXPORT_SKALIERUNG,
+    maxAufloesung / (breite * window.devicePixelRatio),
+    maxAufloesung / (hoehe * window.devicePixelRatio)
+  );
+  if (skalierung < PNG_EXPORT_SKALIERUNG) {
+    console.warn(`PNG-Export: Auflösung auf ${skalierung.toFixed(2)}x begrenzt (GPU-Maximum erreicht, sonst wäre die Zeichnung am Rand abgeschnitten).`);
+  }
+
+  renderer.setPixelRatio(window.devicePixelRatio * skalierung);
+  renderer.setSize(breite, hoehe, false); // false: CSS-Grösse auf dem Bildschirm bleibt unverändert, nur die interne Auflösung steigt
+  linienMaterialAufloesungenAktualisieren();
+  renderer.render(scene, camera);
+
+  const link = document.createElement("a");
+  link.href = renderer.domElement.toDataURL("image/png");
+  const zeitstempel = new Date().toISOString().slice(0, 19).replace("T", "_").replace(/:/g, "-");
+  link.download = `floorplanexploratory_${zeitstempel}.png`;
+  link.click();
+
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(breite, hoehe, false);
+  linienMaterialAufloesungenAktualisieren();
+  renderer.render(scene, camera);
+});
+
+// Cursor zeigt "pointer" statt des normalen Pfeils, sobald die Maus über einer klickbaren (und
+// sichtbaren) Linie schwebt - gleiche Raycasting-Logik wie beim Klick oben, nur ohne Infobox-Effekt.
+renderer.domElement.addEventListener("pointermove", (e) => {
+  const rect = renderer.domElement.getBoundingClientRect();
+  const maus = new THREE.Vector2(
+    ((e.clientX - rect.left) / rect.width) * 2 - 1,
+    -((e.clientY - rect.top) / rect.height) * 2 + 1
+  );
+
+  raycaster.setFromCamera(maus, camera);
+  const treffer = raycaster.intersectObjects(klickbareObjekte.filter((objekt) => objekt.visible));
+  renderer.domElement.style.cursor = treffer.length > 0 ? "pointer" : "default";
+});
 
 function flaecheAusKontur(kontur) {
   let flaeche = 0;
@@ -674,45 +1429,134 @@ function flaecheAusKontur(kontur) {
 }
 
 function flaecheAusKonturen(konturen) {
-  // Erst alle (vorzeichenbehafteten) Konturen aufsummieren, danach einmal abs() -> Löcher
-  // (z.B. Innenhöfe als zweite Kontur mit umgekehrtem Umlaufsinn) ziehen sich dabei automatisch ab,
-  // statt bei einem abs() pro Kontur fälschlicherweise mitgezählt zu werden.
   return Math.abs(konturen.reduce((summe, kontur) => summe + flaecheAusKontur(kontur), 0));
 }
 
+
+
+
+
+
+
+
+
+
+
+
+
 // --------------------------------------------------------------------------------
 
-// Ziel: Gebäude ohne zum Filter passende Wohnung sind ausgeblendet, indem die Materialien ihrer
-// eigenen Linien (siehe gebaeude.linienMaterialien) auf opacity 0 gesetzt werden
+// Ziel: Gebäude ohne zum Filter passende Wohnung sind ausgeblendet
 
 // --------------------------------------------------------------------------------
 
-function gebaeudeDimmingAktualisieren(matchAnzahlProGebaeude) {
-  for (const [gebaeude_id, gebaeude] of gebaeudeNachId) {
-    if (gebaeude.wohnungenAnzahl === 0) continue; // kein Wohngebäude -> nie ausblenden
+function linienSichtbarkeitAnwenden(gruppe) {
+  if (gruppe.entitaetTyp !== "Geschossfläche") {
+    gruppe.linien.visible = gruppe.gefiltertSichtbar && detailSichtbar;
+    if (gruppe.klickflaeche) gruppe.klickflaeche.visible = gruppe.linien.visible;
+    return;
+  }
 
-    const dimmen = !(matchAnzahlProGebaeude.get(gebaeude_id) > 0);
-    for (const material of gebaeude.linienMaterialien) material.opacity = dimmen ? 0 : 1;
-    gebaeude.overlayElement.style.display = dimmen ? "none" : "";
+  const geschossFilterAktiv = filterAuswahl.geschoss.size > 0;
+  const geschossBasisSichtbar = geschossFilterAktiv || gruppe.geschossLabel === STARTGESCHOSS_LABEL || kameraGeschwenkt;
+
+  gruppe.linien.visible = gruppe.gefiltertSichtbar && gruppe.enthuellt && (geschossBasisSichtbar || detailSichtbar);
+
+  if (gruppe.fuellung) {
+    gruppe.fuellung.visible = gruppe.gefiltertSichtbar && gruppe.enthuellt && geschossBasisSichtbar && (!detailSichtbar || kameraGeschwenkt);
+    fuellungMaterialSetzen(gruppe.fuellung, kameraGeschwenkt ? gestapelteFuellungMaterial : schwarzplanMaterial);
   }
 }
 
+function gebaeudeDimmingAktualisieren(matchAnzahlProGebaeude, ausgewaehlteGeschosse) {
+  const geschossFilterAktiv = ausgewaehlteGeschosse.size > 0;
+
+  for (const [gebaeude_id, gebaeude] of gebaeudeNachId) {
+    const ausserhalbIsolierung = isolierung !== null && gebaeude_id !== isolierung.gebaeudeId;
+    const dimmenGebaeude =
+      ausserhalbIsolierung || (gebaeude.wohnungenAnzahl === 0 ? false : !(matchAnzahlProGebaeude.get(gebaeude_id) > 0));
+
+    for (const gruppe of gebaeude.linienMaterialien) {
+      const dimmenGeschoss =
+        (geschossFilterAktiv && !ausgewaehlteGeschosse.has(gruppe.geschossLabel)) ||
+        (isolierung?.geschossLabel != null && gruppe.geschossLabel !== isolierung.geschossLabel);
+      const dimmen = dimmenGebaeude || dimmenGeschoss;
+      gruppe.material.opacity = dimmen ? 0 : 1;
+      gruppe.gefiltertSichtbar = !dimmen;
+      linienSichtbarkeitAnwenden(gruppe);
+    }
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+// Ziel: Bei aktivem Wohnungsgrösse-Filter werden die dazu passenden Wohnungen mit einem farbigen Kreis markiert
+
+function wohnungsMarkierungAktualisieren() {
+  const flaecheAktiv = filterAuswahl.wohnungsgroesse.size > 0;
+  const flaecheFarbe = flaecheAktiv ? cssFarbeAufloesen(DIMENSIONEN.wohnungsgroesse.colorOf()) : null;
+
+  const zimmerAktiv = filterAuswahl.zimmer.size > 0;
+  const zimmerFarbe = zimmerAktiv ? cssFarbeAufloesen(DIMENSIONEN.zimmer.colorOf()) : null;
+
+  const badAktiv = filterAuswahl.anzahlBadezimmer.size > 0;
+  const badFarbe = badAktiv ? cssFarbeAufloesen(DIMENSIONEN.anzahlBadezimmer.colorOf()) : null;
+
+  for (const wohnung of WOHNUNGEN) {
+    const gebaeude = gebaeudeNachId.get(wohnung.gebaeudeId);
+    const passt = wohnungPasstZuFiltern(wohnung, null) && wohnungPasstZuIsolierung(wohnung);
+
+    const kreis = gebaeude.wohnungsKreise[wohnung.wohnungId];
+    if (kreis) {
+      kreis.visible = flaecheAktiv && passt;
+      if (kreis.visible) kreis.material.color.copy(flaecheFarbe);
+    }
+
+    const kontur = gebaeude.wohnungsZimmerKontur[wohnung.wohnungId];
+    if (kontur) {
+      kontur.visible = zimmerAktiv && passt;
+      if (kontur.visible) kontur.material.color.copy(zimmerFarbe);
+    }
+
+    const badKontur = gebaeude.wohnungsBadezimmerKontur[wohnung.wohnungId];
+    if (badKontur) {
+      badKontur.visible = badAktiv && passt;
+      if (badKontur.visible) badKontur.material.color.copy(badFarbe);
+    }
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
 // --------------------------------------------------------------------------------
 
-// Ziel: Bei aktivem Filter rücken die (noch sichtbaren) Gebäude enger zusammen, statt verstreut in
-// ihrer für die volle Menge berechneten Anordnung zu bleiben - dafür wird für die aktuell passende
-// Teilmenge ein neues, engeres Packaging berechnet (siehe packPositionenBerechnen). Ohne Filter
-// kehren alle Gebäude zu ihrer ursprünglichen (beim Laden gewürfelten) Position zurück.
+// Ziel: Bei aktivem Filter rücken die Gebäude enger zusammen
 
 // --------------------------------------------------------------------------------
 
-let letztePackSignatur = null; // um bei jedem Zwischenschritt eines Drags (viele filterAendern-Aufrufe) nicht ständig neu (zufällig) zu packen
+let letztePackSignatur = null; // um bei jedem Zwischenschritt eines Drags nicht ständig neu zu packen
 
 function gebaeudePositionenAktualisieren(matchAnzahlProGebaeude, filterAktiv) {
   const alleGebaeude = [...gebaeudeNachId.values()];
 
   if (!filterAktiv) {
-    if (letztePackSignatur === null) return; // schon in der ursprünglichen Anordnung -> nichts zu tun
+    if (letztePackSignatur === null) return;
     for (const gebaeude of alleGebaeude) {
       gebaeudePositionSetzen(gebaeude, gebaeude.urspruenglicheMitteX, gebaeude.urspruenglicheMitteZ);
     }
@@ -721,13 +1565,11 @@ function gebaeudePositionenAktualisieren(matchAnzahlProGebaeude, filterAktiv) {
     return;
   }
 
-  // Gebäude ohne Wohnungen werden nie ausgeblendet (siehe gebaeudeDimmingAktualisieren) -> bleiben
-  // Teil der sichtbaren Gruppe, sonst würden sie isoliert von der neu gepackten Gruppe zurückbleiben.
   const sichtbareGebaeude = alleGebaeude.filter(
     (gebaeude) => gebaeude.wohnungenAnzahl === 0 || matchAnzahlProGebaeude.get(gebaeude.gebaeude_id) > 0
   );
 
-  if (sichtbareGebaeude.length === 0) return; // Filter passt auf nichts -> nichts zu packen, Kamera bleibt wie sie ist
+  if (sichtbareGebaeude.length === 0) return;
 
   const signatur = sichtbareGebaeude.map((gebaeude) => gebaeude.gebaeude_id).sort().join(",");
   if (signatur === letztePackSignatur) return; // dieselbe sichtbare Menge wie beim letzten Mal
@@ -742,21 +1584,94 @@ function gebaeudePositionenAktualisieren(matchAnzahlProGebaeude, filterAktiv) {
   kameraAufGebaeudeZentrieren(sichtbareGebaeude);
 }
 
+
+
+
+
+
+
+
+
+
+
+
 // --------------------------------------------------------------------------------
 
-// Ziel: Crossfilter-Panel über die Wohnungs-Kennzahlen (Wohnungen pro Gebäude, Zimmer pro Wohnung,
-// Geschossfläche, Geschossigkeit, Zimmer-/Küchen-/Balkongrösse, Anzahl Badezimmer, Wohnungsgrösse,
-// Anzahl Wohnungen pro Geschoss). Ein "Item" ist eine Wohnung; die gebäude-/geschossbezogenen
-// Kennzahlen werden jeder Wohnung mitgegeben, die übrigen sind der eigene Wert der Wohnung.
+// Ziel: Crossfilter-Panel ist erstellt
 
 // --------------------------------------------------------------------------------
 
-// Welche entitaet_subtyp-Werte zu welcher Raumart zählen (für Zimmer-/Küchen-/Balkongrösse)
-const ZIMMER_SUBTYPEN = new Set(["Zimmer", "Wohnzimmer", "Esszimmer", "Schlafzimmer", "Wohn-/Esszimmer"]);
+const WOHNEN_SCHLAFEN_SUBTYPEN = new Set(["Zimmer", "Wohnzimmer", "Schlafzimmer", "Wohn-/Esszimmer"]);
+const ESSEN_SUBTYPEN = new Set(["Esszimmer", "Wohn-/Esszimmer"]);
 const KUECHE_SUBTYPEN = new Set(["Küche", "Wohnküche"]);
 const BALKON_SUBTYPEN = new Set(["Balkon", "Aussenraum", "Loggia", "Terrasse", "Wintergarten", "Garten", "Arkade"]);
+const REDUIT_SUBTYPEN = new Set(["Abstellraum"]);
+const NASSZELLE_SUBTYPEN = new Set(["Badezimmer", "Toilette", "Dusche"]);
+
+const ZIMMER_SUBTYP_ZU_DIMENSIONEN = {};
+for (const [dim, subtypen] of [
+  ["kuechengroesse", KUECHE_SUBTYPEN],
+  ["esszimmergroesse", ESSEN_SUBTYPEN],
+  ["wohnenSchlafenGroesse", WOHNEN_SCHLAFEN_SUBTYPEN],
+  ["balkongroesse", BALKON_SUBTYPEN],
+  ["reduitgroesse", REDUIT_SUBTYPEN],
+  ["nasszellengroesse", NASSZELLE_SUBTYPEN],
+]) {
+  for (const subtyp of subtypen) {
+    if (!ZIMMER_SUBTYP_ZU_DIMENSIONEN[subtyp]) ZIMMER_SUBTYP_ZU_DIMENSIONEN[subtyp] = [];
+    ZIMMER_SUBTYP_ZU_DIMENSIONEN[subtyp].push(dim);
+  }
+}
+
+const ZIMMER_SUBTYP_MATERIALIEN = {};
+for (const dim of ["kuechengroesse", "esszimmergroesse", "wohnenSchlafenGroesse", "balkongroesse", "reduitgroesse", "nasszellengroesse"]) {
+  ZIMMER_SUBTYP_MATERIALIEN[dim] = new THREE.MeshBasicMaterial({
+    color: "#ffffff",
+    transparent: true,
+    opacity: 0.45,
+    side: THREE.DoubleSide,
+    depthWrite: false, // verhindert, dass die Einfärbung andere Raum-Elemente dahinter verdeckt
+  });
+}
+
+const RAUM_MATERIALIEN_ARRAY = [
+  raumKlickflaecheMaterial, // Index 0: Standard (unsichtbar, nur Klick)
+  raumHighlightMaterial, // Index 1: Klick-Auswahl (rot)
+  ...Object.values(ZIMMER_SUBTYP_MATERIALIEN),
+];
+const RAUM_MATERIAL_INDEX = { standard: 0, highlight: 1 };
+Object.keys(ZIMMER_SUBTYP_MATERIALIEN).forEach((dim, i) => (RAUM_MATERIAL_INDEX[dim] = i + 2));
+
+function raumSubtypMarkierungAktualisieren() {
+  for (const dim in ZIMMER_SUBTYP_MATERIALIEN) {
+    if (filterAuswahl[dim].size > 0) {
+      ZIMMER_SUBTYP_MATERIALIEN[dim].color.copy(cssFarbeAufloesen(DIMENSIONEN[dim].colorOf()));
+    }
+  }
+
+  for (const mesh of alleRaumKlickflaechen) {
+    const raeume = mesh.userData.raeume;
+    for (let i = 0; i < raeume.length; i++) {
+      if (ausgewaehlteRaumGruppen.some((a) => a.mesh === mesh && a.gruppenIndex === i)) continue;
+
+      const zeile = raeume[i];
+      const moeglicheDims = ZIMMER_SUBTYP_ZU_DIMENSIONEN[zeile.entitaet_subtyp];
+      const aktiveDim = moeglicheDims && moeglicheDims.find((dim) => filterAuswahl[dim].size > 0);
+
+      let index = RAUM_MATERIAL_INDEX.standard;
+      if (aktiveDim) {
+        const wohnung = wohnungenNachId.get(zeile.wohnungs_id);
+        if (wohnung && wohnungPasstZuFiltern(wohnung, null) && wohnungPasstZuIsolierung(wohnung)) {
+          index = RAUM_MATERIAL_INDEX[aktiveDim];
+        }
+      }
+      mesh.geometry.groups[i].materialIndex = index;
+    }
+  }
+}
 
 let WOHNUNGEN = [];
+let wohnungenNachId = new Map(); // wohnungId -> Wohnung, für raumSubtypMarkierungAktualisieren
 let gebaeudeNachId = new Map();
 
 function wohnungenAufbauen(gebaeudeListe) {
@@ -769,168 +1684,107 @@ function wohnungenAufbauen(gebaeudeListe) {
         zimmer,
         wohnungenProGebaeude: gebaeude.wohnungenAnzahl,
         gf: gebaeude.gf,
+        hnfAnteil: gebaeude.hnfAnteil,
+        gebaeudetiefe: gebaeude.tiefe,
         geschossigkeit: gebaeude.geschossigkeit,
         wohnungsgroesse: gebaeude.wohnungsFlaeche[wohnungId] || 0,
-        zimmergroessen: gebaeude.zimmerFlaechen[wohnungId] || [],
-        kuechengroesse: gebaeude.kuecheFlaeche[wohnungId] || 0,
-        balkongroesse: gebaeude.balkonFlaeche[wohnungId] || 0,
+        wohnenSchlafenGroessen: gebaeude.wohnenSchlafenFlaechen[wohnungId] || [],
+        esszimmergroessen: gebaeude.esszimmerFlaechen[wohnungId] || [],
+        kuechengroesse: gebaeude.kuecheFlaeche[wohnungId] ?? null,
+        balkongroesse: gebaeude.balkonFlaeche[wohnungId] ?? null,
+        reduitgroesse: gebaeude.reduitFlaeche[wohnungId] ?? null,
+        nasszellengroesse: gebaeude.nasszelleFlaeche[wohnungId] ?? null,
         anzahlBadezimmer: gebaeude.badAnzahl[wohnungId] || 0,
         anzahlWohnungenProGeschoss: gebaeude.wohnungenProGeschoss[wohnungId] || 0,
+        geschoss: gebaeude.heimGeschoss[wohnungId],
       });
     }
   }
   return wohnungen;
 }
 
-const WOHNUNGEN_PRO_GEBAEUDE_BINS = [
-  { max: 1, label: "1 Wohnung" },
-  { max: 2, label: "2 Wohnungen" },
-  { max: 3, label: "3 Wohnungen" },
-  { max: 4, label: "4 Wohnungen" },
-  { max: 7, label: "5-7 Wohnungen" },
-  { max: 12, label: "8 -12 Wohnungen" },
-  { max: 20, label: "13 - 20 Wohnungen" },
-  { max: 50, label: "21 - 50 Wohnungen" },
-  { max: 100, label: "51 - 100 Wohnungen" },
-  { max: 200, label: "101 - 200 Wohnungen" },
-  { max: Infinity, label: "> 200 Wohnungen" },
-];
-
-const GF_BINS = [
-  { max: 500, label: "< 500 m²" },
-  { max: 1000, label: "500–1000 m²" },
-  { max: 1500, label: "1000–2000 m²" },
-  { max: 2000, label: "1000–2000 m²" },
-  { max: 3500, label: "2000–3500 m²" },
-  { max: 5000, label: "3500-5000 m²" },
-  { max: Infinity, label: "> 5000 m²" },
-];
-
-const WOHNUNGSGROESSE_BINS = [
-  { max: 60, label: "< 60 m²" },
-  { max: 75, label: "60–75 m²" },
-  { max: 95, label: "75–95 m²" },
-  { max: 130, label: "95–130 m²" },
-  { max: Infinity, label: "> 130 m²" },
-];
-
-
-
-// --------------------------------------------------------------------------------
-
-// Ziel: Einfachere schreibweise für gleichmässige Teile
-
-// --------------------------------------------------------------------------------
-
-
-// Gleichmässige Bins schritt, 2*schritt, ..., anzahl*schritt (jeweils als eigenes Label), plus ein
-// abschliessendes "> Maximum"-Sammel-Bin für alles darüber.
-function gleichmaessigeBins(schritt, anzahl, einheit) {
+function gleichmaessigeBins(start, schritt, anzahl, einheit) {
   const bins = Array.from({ length: anzahl }, (_, i) => {
-    const max = (i + 1) * schritt;
+    const max = start + (i + 1) * schritt;
     return { max, label: `${max} ${einheit}` };
   });
-  bins.push({ max: Infinity, label: `> ${anzahl * schritt} ${einheit}` });
+  bins.push({ max: Infinity, label: `> ${start + anzahl * schritt} ${einheit}` });
   return bins;
 }
 
-const ZIMMERGROESSE_BINS = gleichmaessigeBins(1, 30, "m²"); // 1, 2, ..., 30 m², plus "> 30 m²"
+// Sprungmasse für die SVG Grafiken | Gebäude
 
-// --------------------------------------------------------------------------------
+const GF_BINS = gleichmaessigeBins(0, 200, 15000 / 200, "m²"); // PRIO 1 | 500, 1000, ..., 10000 m², plus "> 10000 m²"
+const HNF_ANTEIL_BINS = gleichmaessigeBins(30, 5, 10, "%") // PRIO 1 | 35, 40, ..., 100 %, plus "> 100 %"
+const WOHNUNGEN_PRO_GEBAEUDE_BINS = gleichmaessigeBins(0, 2, 75, "Wohnungen") // PRIO 1
+const WOHNUNGEN_PRO_GESCHOSS_BINS = gleichmaessigeBins(0, 1, 20, "") // PRIO 1
+const GEBAEUDETIEFE_BINS = gleichmaessigeBins(4, 2, 20, "m") // PRIO 3
+const GESCHOSSIGKEIT_BINS = gleichmaessigeBins(0, 1, 20, "") // PRIO 2
+// FILTER Erschliessung (1 Spänner, 2 Spänner) // PRIO 2
 
 
-const KUECHENGROESSE_BINS = [
-  { max: 6, label: "< 6 m²" },
-  { max: 8, label: "6–8 m²" },
-  { max: 11, label: "8–11 m²" },
-  { max: 15, label: "11–15 m²" },
-  { max: Infinity, label: "> 15 m²" },
-];
+// Sprungmasse für die SVG Grafiken | Wohnungen
 
-const BALKONGROESSE_BINS = [
-  { max: 0, label: "kein Balkon" },
-  { max: 5, label: "≤ 5 m²" },
-  { max: 10, label: "5–10 m²" },
-  { max: 17, label: "10–17 m²" },
-  { max: Infinity, label: "> 17 m²" },
-];
+// FILTER Orientierung (Einseitig, Zweiseitig, Dreiseitig, Vierseitig) | PRIO 3
+// FILTER Himmelsrichtung | PRIO 3
+const WOHNUNGSGROESSE_BINS = gleichmaessigeBins(0, 5, 50, "m²") // PRIO 1
+const ZIMMER_BINS = gleichmaessigeBins(0, 0.5, 20, "Zimmer") // PRIO 1
+const ANZAHL_BADEZIMMER_BINS = gleichmaessigeBins(0, 1, 5, "Stk") // PRIO 1
+// FILTER Organisation (linear, zoniert, zentral, zirkular, peripher) // PRIO 3
+
+// Sprungmasse für die SVG Grafiken | Zimmer
+const KUECHENGROESSE_BINS = gleichmaessigeBins(0, 0.5, 40, "m²")
+const ESSZIMMERGROESSE_BINS = gleichmaessigeBins(15, 1, 30, "m²")
+const WOHNEN_SCHLAFEN_BINS = gleichmaessigeBins(8, 1, 30, "m²")
+const BALKONGROESSE_BINS = gleichmaessigeBins(0, 1, 30, "m²")
+const REDUITGROESSE_BINS = gleichmaessigeBins(0.5, 0.5, 10, "m²")
+const NASSZELLENGROESSE_BINS = gleichmaessigeBins(0, 0.5, 40, "m²")
+// FILTER Ankommen Zimmergrösse | PRIO 2
 
 function binIndexVon(wert, bins) {
   return bins.findIndex((bin) => wert <= bin.max);
 }
 
+function binDimension(feldZugriff, bins, seriesName, { ohneLabel, ...extra } = {}) {
+  return {
+    keysOf: (w) => {
+      const wert = feldZugriff(w);
+      if (ohneLabel && wert === null) return ["ohne"];
+      return Array.isArray(wert) ? wert.map((v) => binIndexVon(v, bins)) : [binIndexVon(wert, bins)];
+    },
+    keys: ohneLabel ? ["ohne", ...bins.map((_, i) => i)] : bins.map((_, i) => i),
+    labelOf: (k) => (k === "ohne" ? ohneLabel : bins[k].label),
+    colorOf: () => `var(--series-${seriesName})`,
+    ...extra,
+  };
+}
+
 function dimensionenAufbauen(wohnungen) {
-  const zimmerWerte = [...new Set(wohnungen.map((w) => w.zimmer))].sort((a, b) => a - b);
-  const geschossigkeitWerte = [...new Set(wohnungen.map((w) => w.geschossigkeit))].sort((a, b) => a - b);
-  const badezimmerWerte = [...new Set(wohnungen.map((w) => w.anzahlBadezimmer))].sort((a, b) => a - b);
-  const wohnungenProGeschossWerte = [...new Set(wohnungen.map((w) => w.anzahlWohnungenProGeschoss))].sort(
-    (a, b) => a - b
-  );
+  const geschossWerte = [...new Set(wohnungen.map((w) => w.geschoss))].sort();
 
   return {
-    wohnungen: {
-      keysOf: (w) => [binIndexVon(w.wohnungenProGebaeude, WOHNUNGEN_PRO_GEBAEUDE_BINS)],
-      keys: WOHNUNGEN_PRO_GEBAEUDE_BINS.map((_, i) => i),
-      labelOf: (i) => WOHNUNGEN_PRO_GEBAEUDE_BINS[i].label,
-      colorOf: () => "var(--series-wohnungen)",
+    geschoss: {
+      keysOf: (w) => [w.geschoss],
+      keys: geschossWerte,
+      labelOf: (label) => label.split("|")[1]?.trim() ?? label,
+      colorOf: () => "var(--series-geschoss)",
+      vertikaleKategorien: true,
     },
-    zimmer: {
-      keysOf: (w) => [w.zimmer],
-      keys: zimmerWerte,
-      labelOf: (k) => String(k),
-      colorOf: () => "var(--series-zimmer)",
-    },
-    gf: {
-      keysOf: (w) => [binIndexVon(w.gf, GF_BINS)],
-      keys: GF_BINS.map((_, i) => i),
-      labelOf: (i) => GF_BINS[i].label,
-      colorOf: () => "var(--series-gf)",
-    },
-    geschossigkeit: {
-      keysOf: (w) => [w.geschossigkeit],
-      keys: geschossigkeitWerte,
-      labelOf: (k) => String(k),
-      colorOf: () => "var(--series-geschossigkeit)",
-    },
-    wohnungsgroesse: {
-      keysOf: (w) => [binIndexVon(w.wohnungsgroesse, WOHNUNGSGROESSE_BINS)],
-      keys: WOHNUNGSGROESSE_BINS.map((_, i) => i),
-      labelOf: (i) => WOHNUNGSGROESSE_BINS[i].label,
-      colorOf: () => "var(--series-wohnungsgroesse)",
-    },
-    // Jedes Zimmer einzeln (statt zu einer Gesamtfläche pro Wohnung summiert) -> eine Wohnung kann
-    // hier mehrere Balken gleichzeitig mitzählen (je ein Zimmer) bzw. beim Filtern zählt sie, sobald
-    // mindestens eines ihrer Zimmer in die gewählte(n) Grössenklasse(n) fällt (siehe wohnungPasstZuFiltern).
-    zimmergroesse: {
-      keysOf: (w) => w.zimmergroessen.map((flaeche) => binIndexVon(flaeche, ZIMMERGROESSE_BINS)),
-      keys: ZIMMERGROESSE_BINS.map((_, i) => i),
-      labelOf: (i) => ZIMMERGROESSE_BINS[i].label,
-      colorOf: () => "var(--series-zimmergroesse)",
-    },
-    kuechengroesse: {
-      keysOf: (w) => [binIndexVon(w.kuechengroesse, KUECHENGROESSE_BINS)],
-      keys: KUECHENGROESSE_BINS.map((_, i) => i),
-      labelOf: (i) => KUECHENGROESSE_BINS[i].label,
-      colorOf: () => "var(--series-kuechengroesse)",
-    },
-    balkongroesse: {
-      keysOf: (w) => [binIndexVon(w.balkongroesse, BALKONGROESSE_BINS)],
-      keys: BALKONGROESSE_BINS.map((_, i) => i),
-      labelOf: (i) => BALKONGROESSE_BINS[i].label,
-      colorOf: () => "var(--series-balkongroesse)",
-    },
-    anzahlBadezimmer: {
-      keysOf: (w) => [w.anzahlBadezimmer],
-      keys: badezimmerWerte,
-      labelOf: (k) => String(k),
-      colorOf: () => "var(--series-anzahl-badezimmer)",
-    },
-    anzahlWohnungenProGeschoss: {
-      keysOf: (w) => [w.anzahlWohnungenProGeschoss],
-      keys: wohnungenProGeschossWerte,
-      labelOf: (k) => String(k),
-      colorOf: () => "var(--series-anzahl-wohnungen-pro-geschoss)",
-    },
+    wohnungen: binDimension((w) => w.wohnungenProGebaeude, WOHNUNGEN_PRO_GEBAEUDE_BINS, "wohnungen", { zaehlEinheit: "gebaeude" }),
+    zimmer: binDimension((w) => w.zimmer, ZIMMER_BINS, "zimmer"),
+    gf: binDimension((w) => w.gf, GF_BINS, "gf", { zaehlEinheit: "gebaeude" }),
+    hnfAnteil: binDimension((w) => w.hnfAnteil, HNF_ANTEIL_BINS, "hnf-anteil", { zaehlEinheit: "gebaeude" }),
+    gebaeudetiefe: binDimension((w) => w.gebaeudetiefe, GEBAEUDETIEFE_BINS, "gebaeudetiefe", { zaehlEinheit: "gebaeude" }),
+    geschossigkeit: binDimension((w) => w.geschossigkeit, GESCHOSSIGKEIT_BINS, "geschossigkeit", { zaehlEinheit: "gebaeude" }),
+    wohnungsgroesse: binDimension((w) => w.wohnungsgroesse, WOHNUNGSGROESSE_BINS, "wohnungsgroesse"),
+    wohnenSchlafenGroesse: binDimension((w) => w.wohnenSchlafenGroessen, WOHNEN_SCHLAFEN_BINS, "wohnen-schlafen-groesse"),
+    esszimmergroesse: binDimension((w) => w.esszimmergroessen, ESSZIMMERGROESSE_BINS, "esszimmergroesse"),
+    kuechengroesse: binDimension((w) => w.kuechengroesse, KUECHENGROESSE_BINS, "kuechengroesse", { ohneLabel: "keine Küche" }),
+    balkongroesse: binDimension((w) => w.balkongroesse, BALKONGROESSE_BINS, "balkongroesse", { ohneLabel: "kein Balkon" }),
+    reduitgroesse: binDimension((w) => w.reduitgroesse, REDUITGROESSE_BINS, "reduitgroesse", { ohneLabel: "kein Reduit" }),
+    nasszellengroesse: binDimension((w) => w.nasszellengroesse, NASSZELLENGROESSE_BINS, "nasszellengroesse", { ohneLabel: "keine Nasszelle" }),
+    anzahlBadezimmer: binDimension((w) => w.anzahlBadezimmer, ANZAHL_BADEZIMMER_BINS, "anzahl-badezimmer"),
+    anzahlWohnungenProGeschoss: binDimension((w) => w.anzahlWohnungenProGeschoss, WOHNUNGEN_PRO_GESCHOSS_BINS, "anzahl-wohnungen-pro-geschoss", { zaehlEinheit: "gebaeude" }),
   };
 }
 
@@ -938,14 +1792,20 @@ let DIMENSIONEN = null;
 let GESAMT_ZAEHLER = {}; // dim -> Map(key -> Anzahl, ungefiltert)
 
 const filterAuswahl = {
+  geschoss: new Set(),
   wohnungen: new Set(),
   zimmer: new Set(),
   gf: new Set(),
+  hnfAnteil: new Set(),
+  gebaeudetiefe: new Set(),
   geschossigkeit: new Set(),
   wohnungsgroesse: new Set(),
-  zimmergroesse: new Set(),
+  wohnenSchlafenGroesse: new Set(),
+  esszimmergroesse: new Set(),
   kuechengroesse: new Set(),
   balkongroesse: new Set(),
+  reduitgroesse: new Set(),
+  nasszellengroesse: new Set(),
   anzahlBadezimmer: new Set(),
   anzahlWohnungenProGeschoss: new Set(),
 };
@@ -955,15 +1815,28 @@ function wohnungPasstZuFiltern(wohnung, ausschlussDim) {
     if (dim === ausschlussDim) continue;
     const auswahl = filterAuswahl[dim];
     if (auswahl.size === 0) continue;
-    // .some() statt .has() auf einem einzelnen Key -> Dimensionen mit mehreren Keys pro Wohnung
-    // (z.B. zimmergroesse: ein Key pro Zimmer) passen bereits, wenn irgendein Key gewählt ist.
     if (!DIMENSIONEN[dim].keysOf(wohnung).some((k) => auswahl.has(k))) return false;
   }
   return true;
 }
 
+function wohnungPasstZuIsolierung(wohnung) {
+  if (!isolierung) return true;
+  if (wohnung.gebaeudeId !== isolierung.gebaeudeId) return false;
+  return isolierung.geschossLabel == null || wohnung.geschoss === isolierung.geschossLabel;
+}
+
 function zaehleProDimension(dim) {
-  const { keysOf, keys } = DIMENSIONEN[dim];
+  const { keysOf, keys, zaehlEinheit } = DIMENSIONEN[dim];
+  if (zaehlEinheit === "gebaeude") {
+    const gebaeudeProKey = new Map(keys.map((k) => [k, new Set()]));
+    for (const wohnung of WOHNUNGEN) {
+      if (!wohnungPasstZuFiltern(wohnung, dim)) continue;
+      for (const k of keysOf(wohnung)) gebaeudeProKey.get(k).add(wohnung.gebaeudeId);
+    }
+    return new Map([...gebaeudeProKey].map(([k, menge]) => [k, menge.size]));
+  }
+
   const zaehler = new Map(keys.map((k) => [k, 0]));
   for (const wohnung of WOHNUNGEN) {
     if (!wohnungPasstZuFiltern(wohnung, dim)) continue;
@@ -975,7 +1848,15 @@ function zaehleProDimension(dim) {
 }
 
 function zaehleAlleUnfiltered(dim) {
-  const { keysOf, keys } = DIMENSIONEN[dim];
+  const { keysOf, keys, zaehlEinheit } = DIMENSIONEN[dim];
+  if (zaehlEinheit === "gebaeude") {
+    const gebaeudeProKey = new Map(keys.map((k) => [k, new Set()]));
+    for (const wohnung of WOHNUNGEN) {
+      for (const k of keysOf(wohnung)) gebaeudeProKey.get(k).add(wohnung.gebaeudeId);
+    }
+    return new Map([...gebaeudeProKey].map(([k, menge]) => [k, menge.size]));
+  }
+
   const zaehler = new Map(keys.map((k) => [k, 0]));
   for (const wohnung of WOHNUNGEN) {
     for (const k of keysOf(wohnung)) {
@@ -985,39 +1866,66 @@ function zaehleAlleUnfiltered(dim) {
   return zaehler;
 }
 
-function matchAnzahlProGebaeudeBerechnen() {
+function matchAnzahlProGebaeudeBerechnen(ausschlussDim = null) {
   const zaehlerProGebaeude = new Map();
   let gesamt = 0;
   for (const wohnung of WOHNUNGEN) {
-    if (!wohnungPasstZuFiltern(wohnung, null)) continue;
+    if (!wohnungPasstZuFiltern(wohnung, ausschlussDim)) continue;
     gesamt++;
     zaehlerProGebaeude.set(wohnung.gebaeudeId, (zaehlerProGebaeude.get(wohnung.gebaeudeId) || 0) + 1);
   }
   return { zaehlerProGebaeude, gesamt };
 }
 
-function filterKopfzeileAktualisieren(gesamt) {
+let WOHNGEBAEUDE_ANZAHL = 0;
+
+function filterKopfzeileAktualisieren(gesamt, gebaeudeGefiltertAnzahl) {
   document.getElementById("stat-count").textContent = gesamt.toLocaleString("de-CH");
   document.getElementById("stat-total").textContent = WOHNUNGEN.length.toLocaleString("de-CH");
+  document.getElementById("stat-gebaeude-count").textContent = gebaeudeGefiltertAnzahl.toLocaleString("de-CH");
+  document.getElementById("stat-gebaeude-total").textContent = WOHNGEBAEUDE_ANZAHL.toLocaleString("de-CH");
   const irgendeinFilterAktiv = Object.values(filterAuswahl).some((s) => s.size > 0);
-  document.getElementById("filter-reset").disabled = !irgendeinFilterAktiv;
+  kopfTitelElement.setAttribute("aria-disabled", String(!irgendeinFilterAktiv));
   return irgendeinFilterAktiv;
+}
+
+function positionierungAusloesen() {
+  const { zaehlerProGebaeude: zaehlerOhneGeschoss } = matchAnzahlProGebaeudeBerechnen("geschoss");
+  const positionierungAktiv = Object.entries(filterAuswahl).some(
+    ([dim, auswahl]) => dim !== "geschoss" && auswahl.size > 0
+  );
+  gebaeudePositionenAktualisieren(zaehlerOhneGeschoss, positionierungAktiv);
 }
 
 function filterAendern() {
   for (const dim in DIMENSIONEN) diagrammRendern(dim);
 
   const { zaehlerProGebaeude, gesamt } = matchAnzahlProGebaeudeBerechnen();
-  const filterAktiv = filterKopfzeileAktualisieren(gesamt);
+  filterKopfzeileAktualisieren(gesamt, zaehlerProGebaeude.size);
 
-  gebaeudeDimmingAktualisieren(zaehlerProGebaeude);
-  gebaeudePositionenAktualisieren(zaehlerProGebaeude, filterAktiv);
+  gebaeudeDimmingAktualisieren(zaehlerProGebaeude, filterAuswahl.geschoss);
+  wohnungsMarkierungAktualisieren();
+  raumSubtypMarkierungAktualisieren();
+
+  if (!positionierungFixiert) {
+    positionierungAusloesen();
+  }
 }
 
 function filterZuruecksetzen() {
   for (const dim in filterAuswahl) filterAuswahl[dim].clear();
   filterAendern();
 }
+
+
+
+
+
+
+
+
+
+
 
 // --------------------------------------------------------------------------------
 
@@ -1036,7 +1944,8 @@ function filterSvgEl(tag, attrs) {
 
 const FILTER_CHART_W = 400;
 const FILTER_CHART_H = 220;
-const FILTER_PAD = { top: 10, right: 6, bottom: 26, left: 6 };
+const FILTER_PAD = { top: 12, right: 6, bottom: 6, left: 6 };
+const FILTER_PAD_VERTIKAL = { top: 4, right: 10, bottom: 4, left: 46 }; // für vertikaleKategorien-Dimensionen (z.B. Geschoss)
 
 const filterChartState = {}; // dim -> { svg, dragging, startIndex, moved }
 
@@ -1056,8 +1965,20 @@ function filterTooltipVerstecken() {
 
 function filterIndexAusEvent(dim, evt) {
   const { svg } = filterChartState[dim];
-  const { keys } = DIMENSIONEN[dim];
+  const { keys, vertikaleKategorien } = DIMENSIONEN[dim];
   const rect = svg.getBoundingClientRect();
+
+  if (vertikaleKategorien) {
+    if (rect.height === 0) return null;
+    const scaleY = FILTER_CHART_H / rect.height;
+    const localY = (evt.clientY - rect.top) * scaleY;
+    const innerH = FILTER_CHART_H - FILTER_PAD_VERTIKAL.top - FILTER_PAD_VERTIKAL.bottom;
+    const slot = innerH / keys.length;
+    let visIdx = Math.floor((localY - FILTER_PAD_VERTIKAL.top) / slot);
+    visIdx = Math.min(Math.max(visIdx, 0), keys.length - 1);
+    return keys.length - 1 - visIdx; // Key-Index 0 liegt unten, visuell aber in der letzten Zeile
+  }
+
   if (rect.width === 0) return null;
   const scaleX = FILTER_CHART_W / rect.width;
   const localX = (evt.clientX - rect.left) * scaleX;
@@ -1102,11 +2023,18 @@ function filterDiagrammInteraktionInitialisieren(dim) {
     filterTooltipAnzeigen(evt, zaehler.get(key) || 0, GESAMT_ZAEHLER[dim].get(key) || 0, DIMENSIONEN[dim].labelOf(key));
   });
 
-  svg.addEventListener("pointerup", () => {
+  svg.addEventListener("pointerup", (evt) => {
     if (state.dragging && !state.moved) {
       const key = keys[state.startIndex];
-      const nurDieseAusgewaehlt = filterAuswahl[dim].size === 1 && filterAuswahl[dim].has(key);
-      filterAuswahl[dim] = nurDieseAusgewaehlt ? new Set() : new Set([key]);
+      if (evt.altKey) {
+        const auswahl = new Set(filterAuswahl[dim]);
+        if (auswahl.has(key)) auswahl.delete(key);
+        else auswahl.add(key);
+        filterAuswahl[dim] = auswahl;
+      } else {
+        const nurDieseAusgewaehlt = filterAuswahl[dim].size === 1 && filterAuswahl[dim].has(key);
+        filterAuswahl[dim] = nurDieseAusgewaehlt ? new Set() : new Set([key]);
+      }
       filterAendern();
     }
     state.dragging = false;
@@ -1117,18 +2045,110 @@ function filterDiagrammInteraktionInitialisieren(dim) {
   });
 }
 
+function vertikalesDiagrammRendern(dim, svg, keys, labelOf, colorOf, gefiltertZaehler, gesamtZaehler, maxWert) {
+  const innerW = FILTER_CHART_W - FILTER_PAD_VERTIKAL.left - FILTER_PAD_VERTIKAL.right;
+  const innerH = FILTER_CHART_H - FILTER_PAD_VERTIKAL.top - FILTER_PAD_VERTIKAL.bottom;
+  const gap = 3;
+  const barH = (innerH - gap * (keys.length - 1)) / keys.length;
+
+  for (const frac of [0.25, 0.5, 0.75]) {
+    const x = FILTER_PAD_VERTIKAL.left + innerW * frac;
+    svg.appendChild(
+      filterSvgEl("line", {
+        x1: x,
+        x2: x,
+        y1: FILTER_PAD_VERTIKAL.top,
+        y2: FILTER_PAD_VERTIKAL.top + innerH,
+        class: "gridline",
+      })
+    );
+  }
+
+  const egIndex = keys.findIndex((k) => labelOf(k) === "EG");
+  if (egIndex !== -1) {
+    for (let i = 1; i < keys.length; i++) {
+      if ((i - egIndex) % 5 !== 0) continue;
+      const y = FILTER_PAD_VERTIKAL.top + (keys.length - i) * (barH + gap) - gap / 2;
+      svg.appendChild(
+        filterSvgEl("line", { x1: FILTER_PAD_VERTIKAL.left, x2: FILTER_PAD_VERTIKAL.left + innerW, y1: y, y2: y, class: "geschoss-trennlinie" })
+      );
+    }
+  }
+
+  const hatAuswahl = filterAuswahl[dim].size > 0;
+
+  keys.forEach((key, i) => {
+    const gesamtWert = gesamtZaehler.get(key) || 0;
+    const gefiltertWert = gefiltertZaehler.get(key) || 0;
+    const gesamtB = (gesamtWert / maxWert) * innerW;
+    const gefiltertB = (gefiltertWert / maxWert) * innerW;
+    // Key-Index 0 soll unten liegen -> von oben gezählt ist das die letzte Zeile
+    const y = FILTER_PAD_VERTIKAL.top + (keys.length - 1 - i) * (barH + gap);
+    const istAusgewaehlt = filterAuswahl[dim].has(key);
+    const farbe = colorOf(key);
+    const gruppenOpazitaet = !hatAuswahl || istAusgewaehlt ? 1 : 0.35;
+
+    const gruppe = filterSvgEl("g", { opacity: gruppenOpazitaet, class: "bar" });
+
+    gruppe.appendChild(
+      filterSvgEl("rect", {
+        x: FILTER_PAD_VERTIKAL.left,
+        y,
+        width: Math.max(gesamtB, 1),
+        height: barH,
+        rx: 4,
+        fill: farbe,
+        "fill-opacity": "0.18",
+        stroke: istAusgewaehlt ? farbe : "var(--layout-linie)",
+        "stroke-width": istAusgewaehlt ? "2" : "1",
+        ...(istAusgewaehlt && { "stroke-opacity": "0.6" }),
+      })
+    );
+
+    if (gefiltertWert > 0) {
+      gruppe.appendChild(
+        filterSvgEl("rect", {
+          x: FILTER_PAD_VERTIKAL.left,
+          y,
+          width: Math.max(gefiltertB, 1),
+          height: barH,
+          rx: 4,
+          fill: farbe,
+        })
+      );
+    }
+
+    svg.appendChild(gruppe);
+  });
+
+  svg.appendChild(
+    filterSvgEl("line", {
+      x1: FILTER_PAD_VERTIKAL.left,
+      x2: FILTER_PAD_VERTIKAL.left,
+      y1: FILTER_PAD_VERTIKAL.top,
+      y2: FILTER_PAD_VERTIKAL.top + innerH,
+      class: "baseline",
+    })
+  );
+}
+
 function diagrammRendern(dim) {
   const { svg } = filterChartState[dim];
   svg.innerHTML = "";
 
-  const { keys, labelOf, colorOf } = DIMENSIONEN[dim];
+  const { keys, labelOf, colorOf, vertikaleKategorien } = DIMENSIONEN[dim];
   const gefiltertZaehler = zaehleProDimension(dim);
   const gesamtZaehler = GESAMT_ZAEHLER[dim];
   const maxWert = Math.max(1, ...keys.map((k) => gesamtZaehler.get(k) || 0));
 
+  if (vertikaleKategorien) {
+    vertikalesDiagrammRendern(dim, svg, keys, labelOf, colorOf, gefiltertZaehler, gesamtZaehler, maxWert);
+    return;
+  }
+
   const innerW = FILTER_CHART_W - FILTER_PAD.left - FILTER_PAD.right;
   const innerH = FILTER_CHART_H - FILTER_PAD.top - FILTER_PAD.bottom;
-  const gap = 6;
+  const gap = 1; // Balkenabstand
   const barW = (innerW - gap * (keys.length - 1)) / keys.length;
 
   for (const frac of [0.25, 0.5, 0.75]) {
@@ -1161,7 +2181,7 @@ function diagrammRendern(dim) {
         rx: 4,
         fill: farbe,
         "fill-opacity": "0.18",
-        stroke: istAusgewaehlt ? farbe : "var(--border)",
+        stroke: istAusgewaehlt ? farbe : "var(--layout-linie)",
         "stroke-width": istAusgewaehlt ? "2" : "1",
         ...(istAusgewaehlt && { "stroke-opacity": "0.6" }),
       })
@@ -1181,18 +2201,6 @@ function diagrammRendern(dim) {
     }
 
     svg.appendChild(gruppe);
-
-    const text = filterSvgEl("text", {
-      x: x + barW / 2,
-      y: FILTER_CHART_H - FILTER_PAD.bottom + 14,
-      "text-anchor": keys.length > 6 ? "end" : "middle",
-      class: "bar-label",
-      ...(keys.length > 6 && {
-        transform: `rotate(-45 ${x + barW / 2} ${FILTER_CHART_H - FILTER_PAD.bottom + 10})`,
-      }),
-    });
-    text.textContent = labelOf(key);
-    svg.appendChild(text);
   });
 
   svg.appendChild(
@@ -1207,12 +2215,23 @@ function diagrammRendern(dim) {
 }
 
 function filterPanelErstellen() {
+  WOHNGEBAEUDE_ANZAHL = new Set(WOHNUNGEN.map((w) => w.gebaeudeId)).size;
+
   DIMENSIONEN = dimensionenAufbauen(WOHNUNGEN);
   GESAMT_ZAEHLER = {};
   for (const dim in DIMENSIONEN) GESAMT_ZAEHLER[dim] = zaehleAlleUnfiltered(dim);
 
   for (const dim in DIMENSIONEN) filterDiagrammInteraktionInitialisieren(dim);
-  document.getElementById("filter-reset").addEventListener("click", filterZuruecksetzen);
+  kopfTitelElement.addEventListener("click", () => {
+    if (kopfTitelElement.getAttribute("aria-disabled") === "true") return;
+    filterZuruecksetzen();
+  });
+  kopfTitelElement.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    if (kopfTitelElement.getAttribute("aria-disabled") === "true") return;
+    event.preventDefault();
+    filterZuruecksetzen();
+  });
 
   filterAendern();
 }

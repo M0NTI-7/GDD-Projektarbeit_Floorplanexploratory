@@ -1,148 +1,389 @@
 <!doctype html>
 <html lang="de">
+
 <head>
   <meta charset="utf-8">
-  <title>Grundriss Darstellung</title>
+  <title>FLOORPLANEXPLORATORY</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Jost:wght@300;400;500;600&display=swap" rel="stylesheet">
   <style>
-    html, body { margin: 0; height: 100%; overflow: hidden; background: #ffffff; } /* Papier-Hintergrund liegt jetzt auf der Seite, da der Canvas transparent ist */
-    canvas { display: block; position: relative; z-index: 1; }
+
+    /* Root-Variablen definiern am Anfang Global den Stil für die Darstellung der Seite und der Charts. */
+    /* ":" sind fest von CSS vorgegeben und sind eine Pseudo-Klasse */
+
+    :root {
+      --header-hoehe: 100px;
+      --oberer-rand: 210px; /* Höhe der Filterleiste + 10px Abstand, damit die Canvas nicht von der Leiste verdeckt wird */
+      --layout-hintergrund: #F0EDE4;
+      --layout-linie: #cfc8b8;
+      --layout-stiftfarbe-schwarz: #2C2A25;
+      --layout-stiftfarbe-dunkelbraun: #5C584F;
+      --layout-stiftfarbe-braun: #9c8888;
+      --series-geschoss: #2C2A25;
+      --series-wohnungen: #34495e;
+      --series-zimmer: #8e44ad;
+      --series-gf: #16a085;
+      --series-hnf-anteil: #1abc9c;
+      --series-gebaeudetiefe: #566573;
+      --series-geschossigkeit: #d35400;
+      --series-wohnen-schlafen-groesse: #167a2c;
+      --series-esszimmergroesse: #9b59b6;
+      --series-kuechengroesse: #f39c12;
+      --series-balkongroesse: #c0392b;
+      --series-reduitgroesse: #8d6e63;
+      --series-nasszellengroesse: #2980b9;
+      --series-anzahl-badezimmer: #13406d;
+      --series-wohnungsgroesse: #27ae91;
+      --series-anzahl-wohnungen-pro-geschoss: #7f8c8d;
+    }
+
+    /* Grundlage für die Darstellung. */
+
+    html,
+    body {
+      margin: 0; /* Entfernt den Standard-Aussenabstand des Browsers */
+      height: 100%; /* Höhe des Viewports, damit die Canvas den ganzen Bildschirm ausfüllt */
+      overflow: hidden; /* Verhindert Scrollen, da die Canvas den ganzen Bildschirm ausfüllt */
+      background: var(--layout-hintergrund); /* Hintergrundfarbe der Seite */
+      font-family: 'Jost', sans-serif; /* Schriftart für die Seite */
+      color: var(--layout-stiftfarbe-schwarz);
+    }
+
+    canvas {
+      display: block; /* Entfernt den Standard-Innenabstand des Browsers */
+      position: fixed; /* Positioniert die Canvas relativ zum Viewport */
+      top: var(--oberer-rand); /* Abstand vom oberen Rand des Viewports, um die Filterleiste nicht zu verdecken */
+      left: 0;
+      z-index: 1; /* z-index ist auf welcher Ebene as Element dargestellt wird. Wie z.B. Ebene in den Vordergrund/Hintergrund legen */
+    }
+
+    /* Hier wird die Infobox des Canvases definiert. */
+    /* "#" ist wie eine ID-Selektor und darf/soll nur genau einmal vorkommen */
 
     #infobox {
       display: none;
       position: fixed;
       z-index: 10;
-      background: #ffffff;
-      border: 1px solid #000000;
-      padding: 8px 12px;
-      font-family: sans-serif;
+      background: var(--layout-hintergrund);
+      border: 1px solid var(--layout-stiftfarbe-schwarz);
+      border-radius: 3px;
+      padding: 14px 8px 8px 8px;
+      font-family: 'Jost', sans-serif;
       font-size: 13px;
-      line-height: 1.5;
-      pointer-events: none; /* Klicks sollen "durch" die Box zur Szene durchgehen */
-    }
-
-    /* Ein .gebaeude-overlay pro Gebäude wird per JS auf die projizierte Bildschirmposition der
-       Gebäudemitte gesetzt. Donut und Zimmer-Legende sind darin per CSS (in Pixeln statt Metern)
-       positioniert, damit sie zueinander garantiert konsistent bleiben, unabhängig vom Kamera-Zoom. */
-
-    .gebaeude-overlay {
-      position: fixed;
-      z-index: 0; /* explizit kleiner als canvas (z-index: 1) -> Donut + Zimmer-Legende bleiben hinter den Grundriss-Linien */
+      line-height: 1.25; /* Zeilenhöhe */
       pointer-events: none;
     }
 
-    .donut-overlay {
-      position: absolute;
-      top: 0;
-      left: 0;
-      border-radius: 50%;
-      transform: translate(-50%, -50%); /* zentriert auf der Gebäudemitte */
+    /* macht aus der Infobox eine Tabelle (grid) damit die Angaben lesbarer sind */
+
+    .infobox-tabelle {
+      display: grid;
+      grid-template-columns: max-content 1fr;
+      column-gap: 10px;
+      margin-top: 6px;
     }
 
-    .donut-loch {
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      width: 60%;
-      height: 60%;
-      background: #ffffff; /* deckt die Mitte ab, ergibt den Donut-Look */
-      border-radius: 50%;
-      transform: translate(-50%, -50%);
-    }
 
-    .zimmer-legende {
-      position: absolute;
-      top: 0;
-      left: 0;
-      transform: translate(-50%, 38px); /* 38px = halber Donut-Durchmesser (30px) + Lücke (8px) */
+
+
+
+
+
+
+
+
+    /* --------------------------------------------------------------------------------------------
+    
+      ZIEL Akt 1: Vollbild-Ladebildschirm, deckt Szene komplett ab, solange die CSV geladen/geparst wird.
+      Verschwindet per Crossfade sobald gebaeudeDarstellen fertig ist. 
+       
+      ! splash kommt von Splash Screen und ist sowas wie der Code für diesen Fachbegriff des Ladebildschirms
+
+    -------------------------------------------------------------------------------------------- */
+
+    #splash {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
       display: flex;
       flex-direction: column;
       align-items: center;
-      gap: 6px;
+      justify-content: center;
+      text-align: center;
+      padding: 32px;
+      background: var(--layout-hintergrund);
+      transition: opacity 0.8s ease;
     }
 
-    .zimmer-reihe {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      font-family: sans-serif;
-      font-size: 12px;
-      color: #000000;
-      white-space: nowrap;
+    #splash.ausgeblendet {
+      opacity: 0;
+      pointer-events: none;
     }
 
-    .zimmer-kreis {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      border: 1px solid #000000;
-      box-sizing: border-box;
-      flex: none;
+    #splash-titel {
+      margin: 0 0 16px;
+      font-size: 48px;
+      font-weight: 600;
+      color: var(--layout-stiftfarbe-schwarz);
     }
 
-    .zimmer-kreis-halb {
-      clip-path: inset(0 50% 0 0); /* nur linke Hälfte des Rings sichtbar, für x.5 Zimmer */
+    #splash-lead-frage {
+      margin: 0 0 12px;
+      max-width: 480px;
+      font-size: 19px;
+      font-weight: 600;
+      line-height: 1.4;
+      color: var(--layout-stiftfarbe-schwarz);
     }
 
-    :root {
-      --border: #d8d8d8;
-      --series-wohnungen: #34495e;
-      --series-zimmer: #8e44ad;
-      --series-gf: #16a085;
-      --series-geschossigkeit: #d35400;
-      --series-zimmergroesse: #2980b9;
-      --series-kuechengroesse: #f39c12;
-      --series-balkongroesse: #c0392b;
-      --series-anzahl-badezimmer: #2c3e50;
-      --series-wohnungsgroesse: #27ae60;
-      --series-anzahl-wohnungen-pro-geschoss: #7f8c8d;
+    #splash-lead {
+      margin: 0;
+      max-width: 480px;
+      font-size: 15px;
+      line-height: 1.6;
+      color: var(--layout-stiftfarbe-dunkelbraun);
     }
 
-    .filter-panel {
+    #splash-fortschritt {
+      margin: 28px 0 0;
+      font-size: 13px;
+      color: var(--layout-stiftfarbe-braun);
+    }
+
+
+
+
+
+
+    /* --------------------------------------------------------------------------------------------
+
+    ZIEL: Filter sind platziert und definiert
+
+    -------------------------------------------------------------------------------------------- */
+
+    .filter-leiste {
       position: fixed;
-      z-index: 20; /* über Canvas (1) und Gebäude-Overlays (0) */
       top: 0;
+      left: 0;
       right: 0;
-      width: 280px;
-      height: 100%;
-      overflow-y: auto;
+      z-index: 20;
+      height: var(--header-hoehe);
+      display: flex;
+      align-items: stretch;
+      box-sizing: border-box;
+      padding: 0 16px;
+      background: var(--layout-hintergrund);
+      font-family: 'Jost', sans-serif;
+      color: var(--layout-stiftfarbe-schwarz);
+    }
+
+    .filter-slot {
+      box-sizing: border-box;
+      padding: 14px 16px;
+      border-right: 1px solid var(--layout-linie);
+    }
+
+    .filter-slot:last-child {
+      border-right: none;
+    }
+
+    .filter-slot-label {
+      margin: 0 0 8px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .filter-slot--geschoss {
+      position: relative;
+      flex: 0 0 120px;
+      display: flex;
+      flex-direction: row;
+    }
+
+    .filter-slot--geschoss .filter-slot-label {
+      writing-mode: vertical-rl;
+      transform: rotate(180deg); /* Text is von unten nach oben lesbar */
+      align-self: center;
+      margin: 0 8px 0 0;
+      font: inherit; /* inherit = gleicher wert wie Elternelement */
+      font-weight: 700;
+      border: none;
+      background: none;
+      padding: 0;
+      color: inherit;
+      cursor: pointer;
+    }
+
+    .filter-slot--geschoss.eingeklappt .filter-slot-panel {
+      display: none;
+    }
+
+    .filter-slot--geschoss .filter-slot-panel {
+      position: absolute;
+      left: 1px; /* Korrektur für Rundungsdifferenz bei fraktionalen Flexbox-Breiten */
+      top: 100%;
+      width: 100%;
+      height: 50vh;
       box-sizing: border-box;
       padding: 16px;
-      background: #ffffff;
-      border-left: 1px solid var(--border);
-      font-family: sans-serif;
-      color: #000000;
+      background: var(--layout-hintergrund);
+      border-right: 1px solid var(--layout-linie);
+    }
+
+    .filter-slot--geschoss .chart-card {
+      height: 100%;
+    }
+
+    .filter-slot--geschoss .chart-svg {
+      width: 100%; /* passt sich der tatsächlichen Spaltenbreite an, statt einen festen Wert vorzugeben */
+      height: 100%;
+      aspect-ratio: auto;
+    }
+
+    .filter-slot--kopf {
+      flex: 0 1 480px;
+      min-width: 360px;
     }
 
     .filter-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      margin-bottom: 16px;
+      gap: 12px;
       font-size: 13px;
     }
 
-    .filter-header button {
+    .filter-stats {
+      max-width: 320px;
+    }
+
+    .filter-slot-dropdown {
+      position: absolute;
+      left: -1px; /* Korrektur für Rundungsdifferenz bei fraktionalen Flexbox-Breiten (flex: 1 1 0) */
+      top: 100%;
+      width: 100%; /* exakt so breit wie die Spalte selbst, damit border-left unten nahtlos zur Trennlinie oben passt */
+      box-sizing: border-box;
+      padding: 16px;
+      background: var(--layout-hintergrund);
+      border-left: 1px solid var(--layout-linie); /* setzt die Trennlinie der VORHERIGEN Spalte (deren border-right) nach unten fort */
+    }
+
+    .filter-slot--tabs.eingeklappt .filter-slot-dropdown {
+      display: none;
+    }
+
+    .filter-slot--tabs {
+      position: relative;
+      flex: 1 1 0;
+      min-width: 220px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      padding-bottom: 4px; /* überschreibt 14px, damit das Label näher am unteren Rand sitzt */
+    }
+
+    .filter-slot--tabs .filter-slot-label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
       font: inherit;
-      padding: 4px 10px;
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      background: #ffffff;
+      font-weight: 700;
+      border: none;
+      background: none;
+      padding: 0;
+      color: inherit;
       cursor: pointer;
     }
 
-    .filter-header button:disabled {
-      opacity: 0.4;
+    .filter-slot--tabs .filter-slot-label::after {
+      content: "▾";
+      font-size: 10px;
+      color: #9C9888;
+      transition: transform 0.15s ease;
+    }
+
+    .filter-slot--tabs:not(.eingeklappt) .filter-slot-label::after {
+      transform: rotate(180deg);
+    }
+
+    .filter-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: stretch;
+      gap: 4px;
+      margin-bottom: 8px;
+    }
+
+    .filter-tab {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font: inherit;
+      font-size: 11px;
+      font-weight: 500;
+      padding: 10px 9px;
+      border: none;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--layout-stiftfarbe-dunkelbraun);
+      cursor: pointer;
+      writing-mode: vertical-rl; /* schreibrichtung von rechts nach links */
+      transform: rotate(180deg); /* leserichtung von unten nach oben */
+    }
+
+    .filter-tab.aktiv {
+      background: var(--layout-stiftfarbe-dunkelbraun);
+      border-color: var(--layout-stiftfarbe-dunkelbraun);
+      color: var(--layout-hintergrund);
+      font-weight: 600;
+    }
+
+    .filter-slot-body .chart-card {
+      display: none;
+    }
+
+    .filter-slot-body .chart-card.aktiv {
+      display: block;
+    }
+
+    .filter-tooltip {
+      position: fixed;
+      z-index: 30;
+      background: #ffffff;
+      border: 1px solid var(--layout-stiftfarbe-schwarz);
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-family: 'Jost', sans-serif;
+      font-size: 12px;
+      line-height: 1.4;
+      pointer-events: none;
+      transform: translate(12px, 12px);
+    }
+
+    #kopf-titel {
+      margin: 10px 0 0;
+      font-size: 20px;
+      font-weight: 600;
+      color: var(--layout-stiftfarbe-schwarz);
+      cursor: pointer;
+      user-select: none;
+    }
+
+    #kopf-titel[aria-disabled="true"] {
       cursor: default;
     }
 
-    .chart-card {
-      margin-bottom: 22px;
-    }
 
-    .chart-card h3 {
-      margin: 0 0 6px;
-      font-size: 12px;
-      font-weight: 600;
+
+    /* --------------------------------------------------------------------------------------------
+
+    ZIEL: Grafiken sind platziert und gestalten
+
+    -------------------------------------------------------------------------------------------- */
+
+    .filter-slot-body .chart-card h3 {
+      display: none;
     }
 
     .chart-svg {
@@ -156,94 +397,172 @@
     }
 
     .chart-svg .gridline {
-      stroke: var(--border);
+      stroke: var(--layout-linie);
       stroke-width: 1;
     }
 
     .chart-svg .baseline {
-      stroke: #000000;
+      stroke: var(--layout-stiftfarbe-schwarz);
       stroke-width: 1;
     }
 
-    .chart-svg .bar-label {
-      font-size: 9px;
-      fill: #555555;
-    }
-
-    .filter-tooltip {
-      position: fixed;
-      z-index: 30;
-      background: #ffffff;
-      border: 1px solid #000000;
-      padding: 6px 10px;
-      font-family: sans-serif;
-      font-size: 12px;
-      line-height: 1.4;
-      pointer-events: none;
-      transform: translate(12px, 12px);
+    .chart-svg .geschoss-trennlinie {
+      stroke: var(--layout-stiftfarbe-schwarz);
+      stroke-width: 0.5;
+      stroke-dasharray: 15 20;
     }
   </style>
 </head>
+
+
+
+
+
+
+
+
+
 <body>
 
   <div id="infobox"></div>
 
-  <aside class="filter-panel">
-    <div class="filter-header">
-      <div><span id="stat-count">0</span> / <span id="stat-total">0</span> Wohnungen</div>
-      <button id="filter-reset" disabled>Zurücksetzen</button>
+  <!-- Titelseite -> hier kann der Text des Titels geändert werden. -->
+
+  <div id="splash">
+    <h1 id="splash-titel">FLOORPLANEXPLORATORY</h1>
+    <p id="splash-lead-frage">Wie wohnt die Schweiz?</p>
+    <p id="splash-lead">
+      Entdecke, wie unterschiedlich Wohnraum in der Schweiz gebaut wird, von kompakten Einzimmerwohnungen bis zu Grosswohnungen mit über zehn Zimmern. Drehe, zoome und filtere, um jede Wohnung einzeln zu betrachten oder mit tausenden anderen zu vergleichen.
+    </p>
+    <p id="splash-fortschritt">Lädt…</p>
+  </div>
+
+  <header id="filter-leiste" class="filter-leiste">
+
+    <div class="filter-slot filter-slot--geschoss eingeklappt" data-slot="geschoss">
+      <button type="button" class="filter-slot-label" aria-expanded="false">Geschoss</button>
+      <div class="filter-slot-panel">
+        <div class="chart-card" data-dim="geschoss">
+          <svg class="chart-svg" viewBox="0 0 400 220" preserveAspectRatio="none"></svg>
+        </div>
+      </div>
     </div>
 
-    <div class="chart-card" data-dim="wohnungen">
-      <h3>Wohnungen pro Gebäude</h3>
-      <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+    <div class="filter-slot filter-slot--kopf">
+      <div class="filter-header">
+        <div class="filter-stats">
+          Deine Auswahl zeigt <span id="stat-count">0</span> von <span id="stat-total">0</span> Wohnungen, verteilt auf <span id="stat-gebaeude-count">0</span> von <span id="stat-gebaeude-total">0</span> Gebäuden.
+        </div>
+      </div>
+      <h1 id="kopf-titel" role="button" tabindex="0" aria-disabled="true">FLOORPLANEXPLORATORY</h1>
     </div>
 
-    <div class="chart-card" data-dim="zimmer">
-      <h3>Zimmer pro Wohnung</h3>
-      <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+    <div class="filter-slot filter-slot--tabs eingeklappt" data-slot="gebaeude">
+      <div class="filter-slot-dropdown">
+        <nav class="filter-tabs"></nav>
+        <div class="filter-slot-body">
+
+          <div class="chart-card" data-dim="gf">
+            <h3>Geschossfläche</h3>
+            <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+          </div>
+
+          <div class="chart-card" data-dim="hnfAnteil">
+            <h3>Anteil HNF an GF</h3>
+            <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+          </div>
+
+          <div class="chart-card" data-dim="wohnungen">
+            <h3>Anzahl WHG pro Gebäude</h3>
+            <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+          </div>
+
+          <div class="chart-card" data-dim="anzahlWohnungenProGeschoss">
+            <h3>Anzahl WHG pro Geschoss</h3>
+            <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+          </div>
+
+          <div class="chart-card" data-dim="gebaeudetiefe">
+            <h3>Gebäudetiefe</h3>
+            <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+          </div>
+
+          <div class="chart-card" data-dim="geschossigkeit">
+            <h3>Anzahl Geschosse</h3>
+            <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+          </div>
+
+        </div>
+      </div>
+      <button type="button" class="filter-slot-label" aria-expanded="false">Gebäude</button>
     </div>
 
-    <div class="chart-card" data-dim="gf">
-      <h3>Geschossfläche (GF)</h3>
-      <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+    <div class="filter-slot filter-slot--tabs eingeklappt" data-slot="wohnungen">
+      <div class="filter-slot-dropdown">
+        <nav class="filter-tabs"></nav>
+        <div class="filter-slot-body">
+
+          <div class="chart-card" data-dim="wohnungsgroesse">
+            <h3>Wohnungsfläche</h3>
+            <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+          </div>
+
+          <div class="chart-card" data-dim="zimmer">
+            <h3>Zimmer pro Wohnung</h3>
+            <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+          </div>
+
+          <div class="chart-card" data-dim="anzahlBadezimmer">
+            <h3>Nasszellen pro Wohnung</h3>
+            <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+          </div>
+
+        </div>
+      </div>
+      <button type="button" class="filter-slot-label" aria-expanded="false">Wohnungen</button>
     </div>
 
-    <div class="chart-card" data-dim="geschossigkeit">
-      <h3>Geschossigkeit</h3>
-      <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+    <div class="filter-slot filter-slot--tabs eingeklappt" data-slot="zimmer">
+      <div class="filter-slot-dropdown">
+        <nav class="filter-tabs"></nav>
+        <div class="filter-slot-body">
+
+          <div class="chart-card" data-dim="wohnenSchlafenGroesse">
+            <h3>Zimmerfläche</h3>
+            <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+          </div>
+
+          <div class="chart-card" data-dim="kuechengroesse">
+            <h3>Küchenfläche</h3>
+            <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+          </div>
+
+          <div class="chart-card" data-dim="esszimmergroesse">
+            <h3>Esszimmerfläche</h3>
+            <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+          </div>
+
+          <div class="chart-card" data-dim="nasszellengroesse">
+            <h3>Nasszellenfläche</h3>
+            <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+          </div>
+
+          <div class="chart-card" data-dim="reduitgroesse">
+            <h3>Reduitfläche</h3>
+            <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+          </div>
+
+          <div class="chart-card" data-dim="balkongroesse">
+            <h3>Balkonfläche</h3>
+            <svg class="chart-svg" viewBox="0 0 400 220"></svg>
+          </div>
+
+        </div>
+      </div>
+      <button type="button" class="filter-slot-label" aria-expanded="false">Zimmer</button>
     </div>
 
-    <div class="chart-card" data-dim="wohnungsgroesse">
-      <h3>Wohnungsgrösse</h3>
-      <svg class="chart-svg" viewBox="0 0 400 220"></svg>
-    </div>
-
-    <div class="chart-card" data-dim="zimmergroesse">
-      <h3>Zimmergrösse</h3>
-      <svg class="chart-svg" viewBox="0 0 400 220"></svg>
-    </div>
-
-    <div class="chart-card" data-dim="kuechengroesse">
-      <h3>Küchengrösse</h3>
-      <svg class="chart-svg" viewBox="0 0 400 220"></svg>
-    </div>
-
-    <div class="chart-card" data-dim="balkongroesse">
-      <h3>Balkongrösse</h3>
-      <svg class="chart-svg" viewBox="0 0 400 220"></svg>
-    </div>
-
-    <div class="chart-card" data-dim="anzahlBadezimmer">
-      <h3>Anzahl Badezimmer</h3>
-      <svg class="chart-svg" viewBox="0 0 400 220"></svg>
-    </div>
-
-    <div class="chart-card" data-dim="anzahlWohnungenProGeschoss">
-      <h3>Anzahl Wohnungen pro Geschoss</h3>
-      <svg class="chart-svg" viewBox="0 0 400 220"></svg>
-    </div>
-  </aside>
+  </header>
 
   <div id="filter-tooltip" class="filter-tooltip" hidden>
     <div class="filter-tooltip-value"></div>
@@ -251,6 +570,7 @@
   </div>
 
   <!-- Import Map: definiert, woher der Browser "three" und "three/addons/" beim import laden soll -->
+   
   <script type="importmap">
   {
     "imports": {
@@ -261,10 +581,13 @@
   </script>
 
   <!-- Einlesen der CSV mit papaparse-->
+
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 
   <!-- Laden des Codes -->
+
   <script type="module" src="main.js"></script>
 
 </body>
+
 </html>
