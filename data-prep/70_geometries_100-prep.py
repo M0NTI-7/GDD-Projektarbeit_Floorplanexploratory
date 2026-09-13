@@ -4,9 +4,9 @@ import os
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-df = pd.read_csv(os.path.join(SCRIPT_DIR, "geometries_final.csv"))
+df = pd.read_csv(os.path.join(SCRIPT_DIR, "75_geometries_final.csv"))
 
-# Erste 20 Gebäude (in der Reihenfolge, wie sie im CSV vorkommen) auswählen
+# Erste 100 Gebäude (in der Reihenfolge, wie sie im CSV vorkommen) auswählen
 erste_parzelle = df["gebaeude_id"].unique()[:100]
 df_teilmenge = df[df["gebaeude_id"].isin(erste_parzelle)]
 
@@ -54,4 +54,4 @@ df = df_teilmenge[[
     "koordinaten",
 ]]
 
-df.to_csv(os.path.join(SCRIPT_DIR, "geometries_erste20.csv"), index=False)
+df.to_csv(os.path.join(SCRIPT_DIR, "65_geometries_erste100.csv"), index=False)

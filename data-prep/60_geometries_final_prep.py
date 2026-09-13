@@ -4,7 +4,7 @@ import os
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-QUELLE = os.path.join(SCRIPT_DIR, "geometries_final.csv")
+QUELLE = os.path.join(SCRIPT_DIR, "75_geometries_final.csv")
 ZIEL = os.path.join(SCRIPT_DIR, "geometries_final_angereichert.csv")
 
 sia416 = pd.read_csv(os.path.join(SCRIPT_DIR, "flaechen-sia416.csv"))
@@ -33,7 +33,7 @@ SPALTEN = [
 ]
 
 # In Chunks verarbeiten (wie in geometries-prep.py), damit die 3+ Mio. Zeilen von
-# geometries_final.csv nicht als Ganzes plus Geometrie-Objekte im Speicher gehalten werden müssen.
+# 75_geometries_final.csv nicht als Ganzes plus Geometrie-Objekte im Speicher gehalten werden müssen.
 unbekannte_raumtypen = set()
 
 for i, chunk in enumerate(pd.read_csv(QUELLE, chunksize=150_000)):
@@ -43,7 +43,7 @@ for i, chunk in enumerate(pd.read_csv(QUELLE, chunksize=150_000)):
     # Ausgeschlossene Gebäude rausnehmen (z.B. fehlerhafte Geometrien/Werte)
     chunk = chunk[~chunk["gebaeude_id"].isin(AUSGESCHLOSSENE_GEBAEUDE_IDS)]
 
-    # Fläche der Räume und Geschossflächen aus der Geometrie berechnen (fehlt in geometries_final.csv)
+    # Fläche der Räume und Geschossflächen aus der Geometrie berechnen (fehlt in 75_geometries_final.csv)
     flaeche_berechnen = chunk["entitaet_typ"].isin(["Raum", "Geschossfläche"])
     chunk.loc[flaeche_berechnen, "flaeche"] = gpd.GeoSeries.from_wkt(
         chunk.loc[flaeche_berechnen, "koordinaten"]

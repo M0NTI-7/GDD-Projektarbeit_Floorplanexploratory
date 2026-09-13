@@ -21,7 +21,7 @@ for i, chunk in enumerate(pd.read_csv("geometries.csv", chunksize=150_000)):
 
     # Chunk direkt anhängen, damit nicht alle Chunks im Speicher gehalten werden müssen
     gdf.to_csv(
-        "geometries_prepared.csv",
+        "85_geometries_prepared.csv",
         mode="w" if i == 0 else "a",
         header=(i == 0),
         index=False,

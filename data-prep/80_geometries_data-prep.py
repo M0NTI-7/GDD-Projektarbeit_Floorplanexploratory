@@ -13,7 +13,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # --------------------- Ziel: Gewünschtes CSV laden.
 
-df = pd.read_csv(os.path.join(SCRIPT_DIR, "geometries_prepared.csv"))
+df = pd.read_csv(os.path.join(SCRIPT_DIR, "85_geometries_prepared.csv"))
 
 # print(df)
 
@@ -321,4 +321,4 @@ neue_zeilen["entitaet_subtyp"] = "GF"
 
 df = pd.concat([df, neue_zeilen], ignore_index=True)
 
-df.to_csv(os.path.join(SCRIPT_DIR, "geometries_final.csv"), index=False)
+df.to_csv(os.path.join(SCRIPT_DIR, "75_geometries_final.csv"), index=False)

@@ -388,8 +388,8 @@ filterTabsInitialisieren();
 
 
 
-// const csvPfad = "../data-prep/geometries_erste100.csv"; // für zum Testen
-const csvPfad = "../data-prep/geometries_final_angereichert.csv";
+// const csvPfad = "../data-prep/65_geometries_erste100.csv"; // für zum Testen
+const csvPfad = "../data-prep/10_geometries_final.csv";
 
 
 
