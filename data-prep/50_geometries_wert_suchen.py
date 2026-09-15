@@ -5,7 +5,7 @@ import subprocess
 SPALTE = "gebaeude_id"  # anpassen: Name der zu durchsuchenden Spalte
 WERT = 15413  # anpassen: gesuchter Wert (Zahl ohne Anführungszeichen bei numerischen Spalten wie gebaeude_id)
 
-pfad = os.path.join(os.path.dirname(__file__), "geometries_final_angereichert.csv")
+pfad = os.path.join(os.path.dirname(__file__), "10_geometries_final.csv")
 df = pd.read_csv(pfad)
 treffer = df[df[SPALTE] == WERT]
 
