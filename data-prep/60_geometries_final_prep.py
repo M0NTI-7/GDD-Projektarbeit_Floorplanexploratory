@@ -5,7 +5,7 @@ import os
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 QUELLE = os.path.join(SCRIPT_DIR, "75_geometries_final.csv")
-ZIEL = os.path.join(SCRIPT_DIR, "geometries_final_angereichert.csv")
+ZIEL = os.path.join(SCRIPT_DIR, "10_geometries_final.csv")
 
 sia416 = pd.read_csv(os.path.join(SCRIPT_DIR, "flaechen-sia416.csv"))
 
